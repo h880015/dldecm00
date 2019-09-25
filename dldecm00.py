@@ -19,6 +19,7 @@ from zipfile import ZipInfo, ZipFile, ZIP_STORED, ZIP_DEFLATED
 import base64
 import xml.etree.ElementTree as etree
 from contextlib import closing
+from clint.textui import progress
 
 from caesarcipher import CaesarCipher
 
@@ -238,19 +239,28 @@ def DownloadBook( bookId ):
 
 	print( "[I] Download book: " + bookId )
 	downloadEpubUrl = "https://api." + SECRET2 + ".com/epub/" + bookId + "?" + SECRET3 + "=" + gClientId + "&" + SECRET4 + "=" + gAccessToken
-	response = requests.get( downloadEpubUrl )
+	response = requests.get( downloadEpubUrl, stream = True )
+	bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
+	if os.path.isfile( bookFile ):
+		print( "[N]   Overwrite existing ePub file" )
+
+	try:
+		with open( bookFile, "wb" ) as f:
+			total_length = int( response.headers.get( "content-length" ) )
+			chunk_size = 1024
+			expected_size = (total_length / chunk_size) + 1
+			for chunk in progress.bar( response.iter_content( chunk_size = chunk_size ), expected_size = expected_size ):
+				if chunk:
+					f.write( chunk )
+					f.flush()
+	except:
+		print( "[E]   Can't save file!" )
+		if os.path.isfile( bookFile ):
+			os.remove( bookFile )
+		return False
+
 	if response.status_code == 200:
-		try:
-			bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
-			if os.path.isfile( bookFile ):
-				print( "[N]   Overwrite existing ePub file" )
-			f = open( bookFile, "wb" )
-			f.write( response.content )
-			f.close()
-			return True
-		except:
-			print( "[E]   Can't save book!" )
-			return False
+		return True
 	else:
 		print( "[E]   Can't download book. Status code = " + str( response.status_code ) )
 		return False
@@ -385,8 +395,8 @@ def DecryptBook( bookId ):
 					except:
 						pass
 					outf.writestr( zi, decryptor.decrypt( path, data ) )
-		except:
-			print( "[E]   Can't decrypt book!" )
+		except Exception as e:
+			print( "[E]   Can't decrypt book! (" + str( e ) + ")" )
 			return False
 
 	RenameBook( bookId )
