@@ -32,10 +32,16 @@ SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
 APP_VERSION = "v1.0"
 
-ENCRYPTION_XML = "META-INF/encryption.xml"
 MIMETYPE = 'mimetype'
+ENCRYPTION_XML = "META-INF/encryption.xml"
+CONTAINER_XML = "META-INF/container.xml"
 META_NAMES = (MIMETYPE, ENCRYPTION_XML)
-NSMAP = {'enc' : 'http://www.w3.org/2001/04/xmlenc#'}
+NSMAP = {
+	'enc' : 'http://www.w3.org/2001/04/xmlenc#',
+	'container' : 'urn:oasis:names:tc:opendocument:xmlns:container',
+	'opf' : 'http://www.idpf.org/2007/opf',
+	'dc' : 'http://purl.org/dc/elements/1.1/'
+}
 
 DB_DIR = os.path.join( SECRET1, CaesarCipher( "Uxlju Bcxajpn", -9 )  )
 DB_FILE_NAME = "app_" + SECRET2 + "_0." + CaesarCipher( "ruigryzuxgmk", -6 )
@@ -47,6 +53,8 @@ EXT_EPUB = ".epub"
 
 DOWNLOAD_SHEET = SECRET1 + "Books.txt"
 DOWNLOAD_SHEET_BAK = SECRET1 + "Books.bak"
+
+OBFUSCATED_LENGTH_IDPF = 1040
 
 gRsaKey = None
 gUserId = None
@@ -196,7 +204,7 @@ def GenerateDownloadSheet():
 			f.write( "# [A] : archive\n" )
 			f.write( "#\n" )
 			f.write( "# Actions:\n" )
-			f.write( "#   [*] : download this book\n" )
+			f.write( "#   [+] : download this book\n" )
 			f.write( "#   [D] : decrypt this book\n" )
 			f.write( "#\n\n" )
 
@@ -222,7 +230,7 @@ def GenerateDownloadSheet():
 				line = line + "{:15s} {:s}\n".format( k, gArchiveData[ k ][ 0 ] )
 				f.write( line )
 	except IOError as e:
-		print( "[E] Can't write download sheet!" )
+		print( "[E] Can't write download sheet! (" + str( e ) + ")" )
 		return False
 
 	print( "[I] Download sheet file '" + DOWNLOAD_SHEET + "' generated" )
@@ -253,8 +261,8 @@ def DownloadBook( bookId ):
 				if chunk:
 					f.write( chunk )
 					f.flush()
-	except:
-		print( "[E]   Can't save file!" )
+	except Exception as e:
+		print( "[E]   Can't save file! (" + str( e ) + ")" )
 		if os.path.isfile( bookFile ):
 			os.remove( bookFile )
 		return False
@@ -264,6 +272,18 @@ def DownloadBook( bookId ):
 	else:
 		print( "[E]   Can't download book. Status code = " + str( response.status_code ) )
 		return False
+
+def GetOpfNamesFromEpub( fEpub ):
+	container = etree.fromstring( fEpub.read( CONTAINER_XML ) )
+	rootfiles = container.find( "container:rootfiles", NSMAP ).findall( "container:rootfile", NSMAP )
+
+	opfs = []
+	for r in rootfiles:
+		rf = r.get( "full-path", None )
+		if rf is not None:
+			opfs.append( rf )
+
+	return opfs
 
 class Decryptor(object):
 	"""
@@ -279,17 +299,52 @@ class Decryptor(object):
 		self._bookkey = bookkey
 
 		self._encrypted = encrypted = set()
-		enc = lambda tag: '{%s}%s' % (NSMAP['enc'], tag)
-		refExpr = './%s/%s/%s' % (enc('EncryptedData'), enc('CipherData'), enc('CipherReference'))
+		self._encFontIdpf = encFontIdpf= set()
+		self._bookUid = ""
 
 		# construct the list of encrypted files
-		for elem in encryption.findall(refExpr):
-			path = elem.get('URI', None)
+		for elem in encryption.findall( './enc:EncryptedData', NSMAP ):
+			path = elem.find( "enc:CipherData", NSMAP ).find( "enc:CipherReference", NSMAP ).get( "URI", None )
 			if path is not None:
 				path = path.encode('utf-8')
-				encrypted.add(path)
+				method = elem.find( "enc:EncryptionMethod", NSMAP ).get( "Algorithm", None )
+				if method == "http://www.idpf.org/2008/embedding":
+					encFontIdpf.add( path )
+				elif method == "http://www.w3.org/2001/04/xmlenc#aes128-cbc":
+					encrypted.add( path )
+				else:
+					print( "[W] Unsupported encrypt algorithm: " + method )
+			else:
+				print( "[W] Can't find URI!")
 
-		print( "      Number of encrypted files = {0}".format(len(encrypted)) )
+		if len(encrypted) != 0:
+			print( "      {0} encrypted files".format(len(encrypted)) )
+		if len(encFontIdpf) != 0:
+			print( "      {0} encrypted Idpf fonts".format(len(encFontIdpf)) )
+
+	def EmbeddedFontDeobfuscateIdpf( self, inBuf ):
+		from Crypto.Hash import SHA1
+
+		h = SHA1.new()
+		h.update( self._bookUid.encode( "utf-8" ) )
+		key = h.digest()
+
+		keyLen = len( key )
+		bufLen = len( inBuf )
+
+		processLen = min( bufLen, OBFUSCATED_LENGTH_IDPF )
+
+		keyBytes = key * int( processLen / keyLen )
+		remain = processLen % keyLen
+		if remain > 0:
+			keyBytes = keyBytes + key[ : remain ]
+
+		result = bytes( a ^ b for ( a, b ) in zip( keyBytes, inBuf[ : processLen ] ) )
+
+		if bufLen > processLen:
+			result += inBuf[ processLen : ]
+	
+		return result
 
 	def decrypt(self, path, data):
 		"""
@@ -309,8 +364,44 @@ class Decryptor(object):
 			numPadding = data[-1]
 			if (numPadding > 0) and (numPadding <= 16):
 				data = data[ : numPadding * -1]
+		elif path.encode('utf-8') in self._encFontIdpf:
+			if self._bookUid == "":
+				print( "[W]   " + path + " not decrypted (no book UID)" )
+			else:
+				data = self.EmbeddedFontDeobfuscateIdpf( data )
+
 		return data
 
+	def GetBookUid( self, fEpub ):
+
+		if len( self._encFontIdpf ) == 0:
+			return
+
+		self._bookUid = ""
+		try:
+			opfs = GetOpfNamesFromEpub( fEpub )
+		except Exception as e:
+			print( "[E]   Can't get OPF file name! (" + str( e ) + ")" )
+			return
+
+		if len( opfs ) > 0:
+			bookUid = ""
+			for rf in opfs:
+				try:
+					opf = etree.fromstring( self.decrypt( rf, fEpub.read( rf ) ) )
+					bookUid = bookUid + opf.find( 'opf:metadata', NSMAP ).find( 'dc:identifier', NSMAP ).text + " "
+				except Exception as e:
+					print( "[E]   Can't parse rootfile " + rf + " (" + str( e ) + ")" )
+					return
+			self._bookUid = bookUid.strip()
+		else:
+			print( "[E]   Can't get OPF file name!" )
+			return
+
+		if self._bookUid != "":
+			print( "      Book UID = " + self._bookUid )
+		else:
+			print( "[E]   Can't find book UID!" )
 
 def DecryptBook( bookId ):
 	print( "[I] Decrypt book: " + bookId )
@@ -342,9 +433,7 @@ def DecryptBook( bookId ):
 		try:
 			# get book AES key from META-INF/encryption.xml
 			encryption = etree.fromstring( inf.read( ENCRYPTION_XML ) )
-			enc = lambda tag: '{%s}%s' % (NSMAP['enc'], tag)
-			keyExpr = './/%s' % (enc('CipherValue'))
-			aesKeyB64 = encryption.findtext(keyExpr)
+			aesKeyB64 = encryption.findtext( './/enc:CipherValue', None, NSMAP )
 			if aesKeyB64 is None:
 				print( "[E]   Can't find encrypted AES key!" )
 				return False
@@ -357,6 +446,7 @@ def DecryptBook( bookId ):
 			print( "      AES KEY = {0}".format( ''.join( hex( x )[2:].zfill( 2 ) for x in bookkey).upper() ) )
 
 			decryptor = Decryptor( bookkey, encryption )
+			decryptor.GetBookUid( inf )
 			kwds = dict( compression=ZIP_DEFLATED, allowZip64=False )
 			with closing( ZipFile( open( decFile, 'wb' ), 'w', **kwds ) ) as outf:
 				zi = ZipInfo( MIMETYPE )
@@ -439,6 +529,35 @@ def CheckEpubIntegrity( bookId ):
 	except:
 		return False
 
+def DeleteBook( bookId ):
+	if not bookId in gBookData.keys():
+		print( "[E] Can't delete book: wrong book ID " + bookId )
+		return False
+
+	print( "      Delete book: " + bookId )
+
+	result = True
+	bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
+	decFile = os.path.join( DEC_BOOKS_DIR, bookId + EXT_EPUB )
+	titleFile = os.path.join( DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
+
+	try:
+		if os.path.isfile( bookFile ):
+			os.remove( bookFile )
+	except:
+		result = False
+	try:
+		if os.path.isfile( decFile ):
+			os.remove( decFile )
+	except:
+		result = False
+	try:
+		if os.path.isfile( titleFile ):
+			os.remove( titleFile )
+	except:
+		result = False
+
+	return result
 
 def ProcessDownloadSheet():
 	if not DownloadSheetExist():
@@ -447,21 +566,29 @@ def ProcessDownloadSheet():
 
 	print( "[I] Parse download sheet" )
 	todl = []
+	torm = []
 	todec = []
 	try:
 		for line in open( DOWNLOAD_SHEET, "r", encoding="utf8" ):
 			if line.startswith( "[" ):
 				mark = line[1]
 				id = line[4:19]
-				if mark == "*":
+				if mark == "+":
 					todl.append( id )
+				elif mark == "-":
+					torm.append( id )
 				elif mark.lower() == "d":
 					todec.append( id )
 	except IOError as e:
-		print( "[E] Can't read download sheet!" )
+		print( "[E] Can't read download sheet! (" + str( e ) + ")" )
 		return False
 
 	bDoSomething = False
+
+	if len( torm ) > 0:
+		print( "[I] Books to be delete: " + str( len( torm ) ) )
+		for bookId in torm:
+			DeleteBook( bookId )
 
 	if len( todec ) > 0:
 		print( "[I] Books to be decrypted: " + str( len( todec ) ) )
