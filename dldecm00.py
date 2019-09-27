@@ -8,6 +8,7 @@ dl and dec books
 import sys
 import os
 import io
+import re
 import shutil
 import platform
 import sqlite3
@@ -53,6 +54,7 @@ EXT_EPUB = ".epub"
 
 DOWNLOAD_SHEET = SECRET1 + "Books.txt"
 DOWNLOAD_SHEET_BAK = SECRET1 + "Books.bak"
+AUTHOR_TITLE_MAP_FILE = "author_title_map.txt"
 
 OBFUSCATED_LENGTH_IDPF = 1040
 
@@ -63,6 +65,11 @@ gClientId = None
 gBookData = dict()
 gArchiveData = dict()
 gDlBooks = []
+gTitleMap = dict()
+gAuthorMap = dict()
+gDownloadAll = False
+gDownloadNew = False
+gDecryptAll = False
 
 def _load_crypto_pycryptodome():
 	"""
@@ -270,20 +277,32 @@ def DownloadBook( bookId ):
 	if response.status_code == 200:
 		return True
 	else:
-		print( "[E]   Can't download book. Status code = " + str( response.status_code ) )
+		print( "[E]   Can't download book. [CODE " + str( response.status_code ) + "]" )
 		return False
 
-def GetOpfNamesFromEpub( fEpub ):
-	container = etree.fromstring( fEpub.read( CONTAINER_XML ) )
-	rootfiles = container.find( "container:rootfiles", NSMAP ).findall( "container:rootfile", NSMAP )
+def EmbeddedFontDeobfuscateIdpf( bookUid, inBuf ):
+	from Crypto.Hash import SHA1
 
-	opfs = []
-	for r in rootfiles:
-		rf = r.get( "full-path", None )
-		if rf is not None:
-			opfs.append( rf )
+	h = SHA1.new()
+	h.update( bookUid.encode( "utf-8" ) )
+	key = h.digest()
 
-	return opfs
+	keyLen = len( key )
+	bufLen = len( inBuf )
+
+	processLen = min( bufLen, OBFUSCATED_LENGTH_IDPF )
+
+	keyBytes = key * int( processLen / keyLen )
+	remain = processLen % keyLen
+	if remain > 0:
+		keyBytes = keyBytes + key[ : remain ]
+
+	result = bytes( a ^ b for ( a, b ) in zip( keyBytes, inBuf[ : processLen ] ) )
+
+	if bufLen > processLen:
+		result += inBuf[ processLen : ]
+
+	return result
 
 class Decryptor(object):
 	"""
@@ -322,30 +341,6 @@ class Decryptor(object):
 		if len(encFontIdpf) != 0:
 			print( "      {0} encrypted Idpf fonts".format(len(encFontIdpf)) )
 
-	def EmbeddedFontDeobfuscateIdpf( self, inBuf ):
-		from Crypto.Hash import SHA1
-
-		h = SHA1.new()
-		h.update( self._bookUid.encode( "utf-8" ) )
-		key = h.digest()
-
-		keyLen = len( key )
-		bufLen = len( inBuf )
-
-		processLen = min( bufLen, OBFUSCATED_LENGTH_IDPF )
-
-		keyBytes = key * int( processLen / keyLen )
-		remain = processLen % keyLen
-		if remain > 0:
-			keyBytes = keyBytes + key[ : remain ]
-
-		result = bytes( a ^ b for ( a, b ) in zip( keyBytes, inBuf[ : processLen ] ) )
-
-		if bufLen > processLen:
-			result += inBuf[ processLen : ]
-	
-		return result
-
 	def decrypt(self, path, data):
 		"""
 		Call this function with file name and its content.
@@ -368,40 +363,165 @@ class Decryptor(object):
 			if self._bookUid == "":
 				print( "[W]   " + path + " not decrypted (no book UID)" )
 			else:
-				data = self.EmbeddedFontDeobfuscateIdpf( data )
+				data = EmbeddedFontDeobfuscateIdpf( self._bookUid, data )
 
 		return data
 
-	def GetBookUid( self, fEpub ):
+	def SetBookUid( self, bookUid ):
+		self._bookUid = bookUid
 
-		if len( self._encFontIdpf ) == 0:
-			return
+def GetOpfNamesFromEpub( fEpub ):
+	container = etree.fromstring( fEpub.read( CONTAINER_XML ) )
+	rootfiles = container.find( "container:rootfiles", NSMAP ).findall( "container:rootfile", NSMAP )
 
-		self._bookUid = ""
-		try:
-			opfs = GetOpfNamesFromEpub( fEpub )
-		except Exception as e:
-			print( "[E]   Can't get OPF file name! (" + str( e ) + ")" )
-			return
+	opfs = []
+	for r in rootfiles:
+		rf = r.get( "full-path", None )
+		if rf is not None:
+			opfs.append( rf )
 
-		if len( opfs ) > 0:
-			bookUid = ""
-			for rf in opfs:
-				try:
-					opf = etree.fromstring( self.decrypt( rf, fEpub.read( rf ) ) )
-					bookUid = bookUid + opf.find( 'opf:metadata', NSMAP ).find( 'dc:identifier', NSMAP ).text + " "
-				except Exception as e:
-					print( "[E]   Can't parse rootfile " + rf + " (" + str( e ) + ")" )
-					return
-			self._bookUid = bookUid.strip()
-		else:
-			print( "[E]   Can't get OPF file name!" )
-			return
+	return opfs
 
-		if self._bookUid != "":
-			print( "      Book UID = " + self._bookUid )
-		else:
-			print( "[E]   Can't find book UID!" )
+def GetBookUid( decryptor, fEpub ):
+	bookUid = ""
+	opfs = GetOpfNamesFromEpub( fEpub )
+	if len( opfs ) > 0:
+		for rf in opfs:
+			try:
+				opf = etree.fromstring( decryptor.decrypt( rf, fEpub.read( rf ) ) )
+				bookUid = bookUid + opf.find( 'opf:metadata', NSMAP ).find( 'dc:identifier', NSMAP ).text + " "
+			except Exception as e:
+				print( "[E]   Can't get book UID! (" + str( e ) + ")" )
+				return
+		bookUid = bookUid.strip()
+	else:
+		print( "[E]   Can't get OPF file name!" )
+		return bookUid
+
+	if bookUid != "":
+		print( "      Book UID = " + bookUid )
+	else:
+		print( "[E]   Can't find book UID!" )
+
+	return bookUid
+
+def ChangeTitle( data, newTitle ):
+	opf = etree.fromstring( data )
+	elTitle = opf.find( 'opf:metadata', NSMAP ).find( 'dc:title', NSMAP )
+	oldTitle = elTitle.text
+	if oldTitle == newTitle:
+		print( "[N]    New title is the same as title in OPF" )
+		return data
+
+	if "\r\n".encode( "utf-8" ) in data:
+		lineEnd = "\r\n"
+	else:
+		lineEnd = "\n"
+
+	lines = data.decode( "utf-8" ).split( lineEnd )
+
+	patTitle = re.compile( "^(.*<dc:title[^>]*>).+(<\/dc:title>.*)$" )
+	bChanged = False
+	for i in range( len( lines ) ):
+		l = lines[ i ]
+		if "dc:title" in l:
+			result = patTitle.match( l )
+			if result:
+				lines[ i ] = result.group( 1 ) + newTitle + result.group( 2 )
+				print( "      Change title in <dc:title>")
+				bChanged = True
+				break
+
+	if not bChanged:
+		print( "[W]   Can't find <dc:title> in OPF!" )
+		return data
+
+	idTitle = elTitle.get( "id" )
+	if idTitle:
+		metas = opf.find( 'opf:metadata', NSMAP ).findall( 'opf:meta[@refines="#' + idTitle + '"]', NSMAP )
+		if metas and metas[0].text != newTitle:
+			patTitle2 = re.compile( '^(.*<meta refines="#' + idTitle + '"[^>]*>).+(<\/meta>.*)$' )
+			bChanged = False
+			for i in range( len( lines ) ):
+				l = lines[ i ]
+				if ('refines="#' + idTitle) in l:
+					result2 = patTitle2.match( l )
+					if result2:
+						lines[ i ] = result2.group( 1 ) + newTitle + result2.group( 2 )
+						print( "      Change title in <meta refines>")
+						bChanged = True
+						break
+			if not bChanged:
+				print( "[W]   Can't change <meta refines> title in OPF!" )
+
+	data = lineEnd.join( lines ).encode( "utf-8" )
+
+	return data
+
+def ChangeAuthor( data, newAuthor ):
+	opf = etree.fromstring( data )
+	elAuthor = opf.find( 'opf:metadata', NSMAP ).find( 'dc:creator', NSMAP )
+	oldAuthor = elAuthor.text
+	if oldAuthor == newAuthor:
+		print( "[N]    New author is the same as author in OPF" )
+		return data
+
+	if "\r\n".encode( "utf-8" ) in data:
+		lineEnd = "\r\n"
+	else:
+		lineEnd = "\n"
+
+	lines = data.decode( "utf-8" ).split( lineEnd )
+
+	patAuthor = re.compile( "^(.*<dc:creator[^>]*>).+(<\/dc:creator>.*)$" )
+	bChanged = False
+	for i in range( len( lines ) ):
+		l = lines[ i ]
+		if "dc:creator" in l:
+			result = patAuthor.match( l )
+			if result:
+				lines[ i ] = result.group( 1 ) + newAuthor + result.group( 2 )
+				print( "      Change author in <dc:creator>")
+				bChanged = True
+				break
+
+	if not bChanged:
+		print( "[W]   Can't find <dc:creator> in OPF!" )
+		return data
+
+	idAuthor = elAuthor.get( "id" )
+	if idAuthor:
+		metas = opf.find( 'opf:metadata', NSMAP ).findall( 'opf:meta[@refines="#' + idAuthor + '"][@property="file-as"]', NSMAP )
+		if metas and metas[0].text != newAuthor:
+			patAuthor2 = re.compile( '^(.*<meta refines="#' + idAuthor + '"[^>]*>).+(<\/meta>.*)$' )
+			bChanged = False
+			for i in range( len( lines ) ):
+				l = lines[ i ]
+				if ('refines="#' + idAuthor) in l and 'property="file-as"' in l:
+					result2 = patAuthor2.match( l )
+					if result2:
+						lines[ i ] = result2.group( 1 ) + newAuthor + result2.group( 2 )
+						print( "      Change author in <meta refines>")
+						bChanged = True
+						break
+			if not bChanged:
+				print( "[W]   Can't change <meta refines> author in OPF!" )
+
+	data = lineEnd.join( lines ).encode( "utf-8" )
+
+	return data
+
+def ShowBookInfo( data ):
+	try:
+		opf = etree.fromstring( data )
+		title = opf.find( 'opf:metadata', NSMAP ).find( 'dc:title', NSMAP ).text
+		author = opf.find( 'opf:metadata', NSMAP ).find( 'dc:creator', NSMAP ).text
+		if title is not None and title != "":
+			print( "      Title  : " + title )
+		if author is not None and author != "":
+			print( "      Author : " + author )
+	except:
+		pass
 
 def DecryptBook( bookId ):
 	print( "[I] Decrypt book: " + bookId )
@@ -446,7 +566,11 @@ def DecryptBook( bookId ):
 			print( "      AES KEY = {0}".format( ''.join( hex( x )[2:].zfill( 2 ) for x in bookkey).upper() ) )
 
 			decryptor = Decryptor( bookkey, encryption )
-			decryptor.GetBookUid( inf )
+			if len( decryptor._encFontIdpf ) > 0:
+				decryptor.SetBookUid( GetBookUid( decryptor, inf ) )
+			opfs = GetOpfNamesFromEpub( inf )
+			if len( opfs ) > 1:
+				print( "[W]   Num of rootfile = " + str( len( opfs ) ) )
 			kwds = dict( compression=ZIP_DEFLATED, allowZip64=False )
 			with closing( ZipFile( open( decFile, 'wb' ), 'w', **kwds ) ) as outf:
 				zi = ZipInfo( MIMETYPE )
@@ -484,7 +608,14 @@ def DecryptBook( bookId ):
 						zi.create_system = oldzi.create_system
 					except:
 						pass
-					outf.writestr( zi, decryptor.decrypt( path, data ) )
+					data = decryptor.decrypt( path, data )
+					if path in opfs:
+						if bookId in gTitleMap:
+							data = ChangeTitle( data, gTitleMap[ bookId ] )
+						if bookId in gAuthorMap:
+							data = ChangeAuthor( data, gAuthorMap[ bookId ] )
+						ShowBookInfo( data )
+					outf.writestr( zi, data )
 		except Exception as e:
 			print( "[E]   Can't decrypt book! (" + str( e ) + ")" )
 			return False
@@ -502,19 +633,17 @@ def RenameBook( bookId ):
 	titleFile = os.path.join( DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
 	if os.path.isfile( titleFile ):
 		os.remove( titleFile )
-	print( "[I] Rename " + bookId + EXT_EPUB + " -> " + gBookData[ bookId ][0] + EXT_EPUB )
+	print( "[I] Book saved: " + gBookData[ bookId ][0] + EXT_EPUB )
 	os.rename( decFile, titleFile )
 
 	return True
 
 def GetBook( bookId ):
-	if not DownloadBook( bookId ):
-		return False
+	if DownloadBook( bookId ):
+		if DecryptBook( bookId ):
+			return True
 
-	if not DecryptBook( bookId ):
-		return False
-
-	return True
+	return False
 
 def CheckEpubIntegrity( bookId ):
 	bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
@@ -571,14 +700,17 @@ def ProcessDownloadSheet():
 	try:
 		for line in open( DOWNLOAD_SHEET, "r", encoding="utf8" ):
 			if line.startswith( "[" ):
-				mark = line[1]
+				mark = line[1].upper()
 				id = line[4:19]
-				if mark == "+":
-					todl.append( id )
-				elif mark == "-":
+				if mark == "-":
 					torm.append( id )
-				elif mark.lower() == "d":
+				elif mark == "D" or (gDecryptAll and mark == "V"):
 					todec.append( id )
+				elif mark == " " and gDownloadNew:
+					todl.append( id )
+				elif mark == "+" or (gDownloadAll and mark != "A"):
+					todl.append( id )
+
 	except IOError as e:
 		print( "[E] Can't read download sheet! (" + str( e ) + ")" )
 		return False
@@ -600,13 +732,13 @@ def ProcessDownloadSheet():
 			else:
 				decng = decng + 1
 				todl.append( bookId )
+			print( "" )
 
 		print( "[I] Decrypt Done" )
 		print( "      OK: " + str( decok ) )
 		print( "    Fail: " + str( decng ) )
 		print( "" )
 		bDoSomething = True
-
 
 	if len( todl ) > 0:
 		print( "[I] Books to be downloaded: " + str( len( todl ) ) )
@@ -617,6 +749,7 @@ def ProcessDownloadSheet():
 				dlok = dlok + 1
 			else:
 				dlng = dlng + 1
+			print( "" )
 
 		print( "[I] Download Done" )
 		print( "      OK: " + str( dlok ) )
@@ -624,13 +757,37 @@ def ProcessDownloadSheet():
 		print( "" )
 		bDoSomething = True
 
-
 	if bDoSomething:
 		if os.path.isfile( DOWNLOAD_SHEET_BAK ):
 			os.remove( DOWNLOAD_SHEET_BAK )
 		os.rename( DOWNLOAD_SHEET, DOWNLOAD_SHEET_BAK )
 
 	return True
+
+def ParseAuthorTitleMap():
+	global gAuthorMap, gTitleMap
+
+	try:
+		lines = list( open( AUTHOR_TITLE_MAP_FILE, encoding = "utf-8" ) )
+		pat = re.compile( "^(\w) (\w+) : (.+)$" )
+		for l in lines:
+			if l.startswith( "A" ):
+				result = pat.match( l )
+				if result:
+					bookId = result.group( 2 )
+					author = result.group( 3 )
+					gAuthorMap.update( { bookId : author } )
+			elif l.startswith( "T" ):
+				result = pat.match( l )
+				if result:
+					bookId = result.group( 2 )
+					title = result.group( 3 )
+					gTitleMap.update( { bookId : title } )
+	except:
+		pass
+
+	if len( gAuthorMap ) > 0 or len( gTitleMap ) > 0:
+		print( "[I] Load " + str( len( gAuthorMap ) ) + " author and " + str( len( gTitleMap ) ) + " title from " + AUTHOR_TITLE_MAP_FILE )
 
 def ShowUsage():
 	program = os.path.basename( sys.argv[0] )
@@ -641,6 +798,7 @@ def ShowUsage():
 	print( "    " + program + " -d" )
 	print( "       " + CaesarCipher( "Yjrigjvy/yzxmtko wjjfn vxxjmydib oj yjrigjvy nczzo", -21 ) )
 	print( "")
+	sys.exit( 1 )
 
 if __name__ == '__main__':
 
@@ -663,11 +821,20 @@ if __name__ == '__main__':
 	if not CheckBookDir():
 		sys.exit( 1 )
 
+	ParseAuthorTitleMap()
+
 	if len( sys.argv ) > 1:
-		if sys.argv[1] == "-d":
+		if sys.argv[1].startswith( "-d" ):
+			if sys.argv[1] == "-dlall":
+				gDownloadAll = True
+			elif sys.argv[1] == "-dlnew":
+				gDownloadNew = True
+			elif sys.argv[1] == "-decall":
+				gDecryptAll = True
+			elif sys.argv[1] != "-d":
+				ShowUsage()
 			ProcessDownloadSheet()
 		else:
 			ShowUsage()
-			sys.exit( 1 )
 
 	GenerateDownloadSheet()
