@@ -7,10 +7,10 @@ dl and dec books
 
 import sys
 import os
-import io
 import re
 import shutil
 import platform
+import argparse
 import sqlite3
 import json
 import glob
@@ -70,6 +70,8 @@ gAuthorMap = dict()
 gDownloadAll = False
 gDownloadNew = False
 gDecryptAll = False
+gArgParser = None
+gOutDir = "."
 
 def _load_crypto_pycryptodome():
 	"""
@@ -175,34 +177,36 @@ def CollectBookInfo():
 	return True
 
 def CheckBookDir():
-	if not os.path.exists( ENC_BOOKS_DIR ):
+	if not os.path.exists( os.path.join( gOutDir, ENC_BOOKS_DIR ) ):
 		try:
-			os.makedirs( ENC_BOOKS_DIR )
+			os.makedirs( os.path.join( gOutDir, ENC_BOOKS_DIR ) )
 		except:
-			print( "[E] Can't create directory: " + os.path.abspath( ENC_BOOKS_DIR ) )
+			print( "[E] Can't create directory: " + os.path.abspath( os.path.join( gOutDir, ENC_BOOKS_DIR ) ) )
 			return False
 
-		print( "[I] Create directory: " + os.path.abspath( DEC_BOOKS_DIR ) )
+		print( "[I] Create directory: " + os.path.abspath( os.path.join( gOutDir, DEC_BOOKS_DIR ) ) )
 	
 	return True
 
 def GetDlBooks():
 	global gDlBooks
 	
-	for f in glob.glob( os.path.join( ENC_BOOKS_DIR, "*.epub" ) ):
+	for f in glob.glob( os.path.join( gOutDir, ENC_BOOKS_DIR, "*.epub" ) ):
 		gDlBooks.append( os.path.splitext( os.path.basename( f ) )[0] )
 
 def DownloadSheetExist():
-	return os.path.isfile( DOWNLOAD_SHEET )
+	return os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET ) )
 
 def GenerateDownloadSheet():
 	GetDlBooks()
+
+	dls = os.path.abspath( os.path.join( gOutDir, DOWNLOAD_SHEET ) )
 
 	dled = 0
 	total = 0
 	archive = 0
 	try:
-		with open( DOWNLOAD_SHEET, "w", encoding="utf8" ) as f:
+		with open( dls, "w", encoding="utf8" ) as f:
 			f.write( "#\n" )
 			f.write( "# List of books on " + SECRET1 + "\n" )
 			f.write( "#\n" )
@@ -240,7 +244,7 @@ def GenerateDownloadSheet():
 		print( "[E] Can't write download sheet! (" + str( e ) + ")" )
 		return False
 
-	print( "[I] Download sheet file '" + DOWNLOAD_SHEET + "' generated" )
+	print( "[I] Download sheet file '" + dls + "' generated" )
 	print( "      Books      : " + str( total ) )
 	print( "      Downloaded : " + str( dled ) )
 	print( "      Archive    : " + str( archive ) )
@@ -252,10 +256,10 @@ def DownloadBook( bookId ):
 		print( "[E] You don't have book " + bookId + " !" )
 		return False
 
-	print( "[I] Download book: " + bookId )
+	print( "[I] Download book: " + bookId + " [" +  gBookData[ bookId ][0] + "]" )
 	downloadEpubUrl = "https://api." + SECRET2 + ".com/epub/" + bookId + "?" + SECRET3 + "=" + gClientId + "&" + SECRET4 + "=" + gAccessToken
 	response = requests.get( downloadEpubUrl, stream = True )
-	bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
+	bookFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
 	if os.path.isfile( bookFile ):
 		print( "[N]   Overwrite existing ePub file" )
 
@@ -277,7 +281,7 @@ def DownloadBook( bookId ):
 	if response.status_code == 200:
 		return True
 	else:
-		print( "[E]   Can't download book. [CODE " + str( response.status_code ) + "]" )
+		print( "[E]   Can't download book. [CODE: " + str( response.status_code ) + "]" )
 		return False
 
 def EmbeddedFontDeobfuscateIdpf( bookUid, inBuf ):
@@ -524,10 +528,10 @@ def ShowBookInfo( data ):
 		pass
 
 def DecryptBook( bookId ):
-	print( "[I] Decrypt book: " + bookId )
+	print( "[I] Decrypt  book: " + bookId + " [" +  gBookData[ bookId ][0] + "]" )
 
-	encFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
-	decFile = os.path.join( DEC_BOOKS_DIR, bookId + EXT_EPUB )
+	encFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
+	decFile = os.path.join( gOutDir, DEC_BOOKS_DIR, bookId + EXT_EPUB )
 
 	if not os.path.isfile( encFile ):
 		print( "[E]   File not found: " + encFile )
@@ -629,12 +633,13 @@ def RenameBook( bookId ):
 		print( "[E] Can't rename book: wrong book ID " + bookId )
 		return False
 
-	decFile = os.path.join( DEC_BOOKS_DIR, bookId + EXT_EPUB )
-	titleFile = os.path.join( DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
+	decFile = os.path.join( gOutDir, DEC_BOOKS_DIR, bookId + EXT_EPUB )
+	titleFile = os.path.join( gOutDir, DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
 	if os.path.isfile( titleFile ):
 		os.remove( titleFile )
-	print( "[I] Book saved: " + gBookData[ bookId ][0] + EXT_EPUB )
 	os.rename( decFile, titleFile )
+
+	print( "[I] Book saved: " + gBookData[ bookId ][0] + EXT_EPUB )
 
 	return True
 
@@ -646,7 +651,7 @@ def GetBook( bookId ):
 	return False
 
 def CheckEpubIntegrity( bookId ):
-	bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
+	bookFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
 	
 	try:
 		zf = zipfile.ZipFile( bookFile )
@@ -666,9 +671,9 @@ def DeleteBook( bookId ):
 	print( "      Delete book: " + bookId )
 
 	result = True
-	bookFile = os.path.join( ENC_BOOKS_DIR, bookId + EXT_EPUB )
-	decFile = os.path.join( DEC_BOOKS_DIR, bookId + EXT_EPUB )
-	titleFile = os.path.join( DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
+	bookFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
+	decFile = os.path.join( gOutDir, DEC_BOOKS_DIR, bookId + EXT_EPUB )
+	titleFile = os.path.join( gOutDir, DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
 
 	try:
 		if os.path.isfile( bookFile ):
@@ -693,12 +698,14 @@ def ProcessDownloadSheet():
 		print( "[E] Download sheet not exist!" )
 		return False
 
+	dls = os.path.abspath( os.path.join( gOutDir, DOWNLOAD_SHEET ) )
+
 	print( "[I] Parse download sheet" )
 	todl = []
 	torm = []
 	todec = []
 	try:
-		for line in open( DOWNLOAD_SHEET, "r", encoding="utf8" ):
+		for line in open( dls, "r", encoding="utf8" ):
 			if line.startswith( "[" ):
 				mark = line[1].upper()
 				id = line[4:19]
@@ -758,17 +765,17 @@ def ProcessDownloadSheet():
 		bDoSomething = True
 
 	if bDoSomething:
-		if os.path.isfile( DOWNLOAD_SHEET_BAK ):
-			os.remove( DOWNLOAD_SHEET_BAK )
-		os.rename( DOWNLOAD_SHEET, DOWNLOAD_SHEET_BAK )
+		if os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) ):
+			os.remove( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
+		os.rename( os.path.join( gOutDir, DOWNLOAD_SHEET ), os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
 
 	return True
 
-def ParseAuthorTitleMap():
+def ParseAuthorTitleMap( mapFile ):
 	global gAuthorMap, gTitleMap
-
+	
 	try:
-		lines = list( open( AUTHOR_TITLE_MAP_FILE, encoding = "utf-8" ) )
+		lines = list( open( mapFile, encoding = "utf-8" ) )
 		pat = re.compile( "^(\w) (\w+) : (.+)$" )
 		for l in lines:
 			if l.startswith( "A" ):
@@ -789,16 +796,16 @@ def ParseAuthorTitleMap():
 	if len( gAuthorMap ) > 0 or len( gTitleMap ) > 0:
 		print( "[I] Load " + str( len( gAuthorMap ) ) + " author and " + str( len( gTitleMap ) ) + " title from " + AUTHOR_TITLE_MAP_FILE )
 
-def ShowUsage():
-	program = os.path.basename( sys.argv[0] )
-	print( "Usage:" )
-	print( "    " + program )
-	print( "       " + CaesarCipher( "Wlyuny xiqhfiux mbyyn zil myfywncha uwncihm ni jylzilg", -20 ) )
-	print( "")
-	print( "    " + program + " -d" )
-	print( "       " + CaesarCipher( "Yjrigjvy/yzxmtko wjjfn vxxjmydib oj yjrigjvy nczzo", -21 ) )
-	print( "")
-	sys.exit( 1 )
+def ParseArgument():
+	parser = argparse.ArgumentParser()
+	parser.add_argument( "-d", "--dldec", action="store_true", help="Download/decrypt books according to download sheet" )
+	parser.add_argument( "--dlall", action="store_true", help="Download all books" )
+	parser.add_argument( "--dlnew", action="store_true", help="Download books that have not downloaded yet" )
+	parser.add_argument( "--decall", action="store_true", help="Decrypt all downloaded books" )
+	parser.add_argument(  "-o", "--out", help="Output directory", default="." )
+	parser.add_argument(  "-m", "--map", help="Specify title/author map file", default=AUTHOR_TITLE_MAP_FILE )
+
+	return parser.parse_args()
 
 if __name__ == '__main__':
 
@@ -821,20 +828,22 @@ if __name__ == '__main__':
 	if not CheckBookDir():
 		sys.exit( 1 )
 
-	ParseAuthorTitleMap()
+	args = ParseArgument()
 
-	if len( sys.argv ) > 1:
-		if sys.argv[1].startswith( "-d" ):
-			if sys.argv[1] == "-dlall":
-				gDownloadAll = True
-			elif sys.argv[1] == "-dlnew":
-				gDownloadNew = True
-			elif sys.argv[1] == "-decall":
-				gDecryptAll = True
-			elif sys.argv[1] != "-d":
-				ShowUsage()
-			ProcessDownloadSheet()
-		else:
-			ShowUsage()
+	gOutDir = args.out
+	ParseAuthorTitleMap( args.map )
+
+	bProcess = True
+	if args.dlall:
+		gDownloadAll = True
+	elif args.dlnew:
+		gDownloadNew = True
+	elif args.decall:
+		gDecryptAll = True
+	elif not args.dldec:
+		bProcess = False
+		
+	if bProcess:
+		ProcessDownloadSheet()
 
 	GenerateDownloadSheet()
