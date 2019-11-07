@@ -31,7 +31,7 @@ SECRET4 = CaesarCipher( "lnnpdd_ezvpy", -11 )
 SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
-APP_VERSION = "v1.0"
+APP_VERSION = "v1.1"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -67,11 +67,15 @@ gArchiveData = dict()
 gDlBooks = []
 gTitleMap = dict()
 gAuthorMap = dict()
+
+gNeedProcess = True
 gDownloadAll = False
 gDownloadNew = False
 gDecryptAll = False
-gArgParser = None
 gOutDir = "."
+gProxy = { 'no': 'pass' }
+gSslVerify = True
+gMapFile = None
 
 def _load_crypto_pycryptodome():
 	"""
@@ -258,7 +262,7 @@ def DownloadBook( bookId ):
 
 	print( "[I] Download book: " + bookId + " [" +  gBookData[ bookId ][0] + "]" )
 	downloadEpubUrl = "https://api." + SECRET2 + ".com/epub/" + bookId + "?" + SECRET3 + "=" + gClientId + "&" + SECRET4 + "=" + gAccessToken
-	response = requests.get( downloadEpubUrl, stream = True )
+	response = requests.get( downloadEpubUrl, stream = True, verify=gSslVerify, proxies=gProxy )
 	bookFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
 	if os.path.isfile( bookFile ):
 		print( "[N]   Overwrite existing ePub file" )
@@ -282,6 +286,8 @@ def DownloadBook( bookId ):
 		return True
 	else:
 		print( "[E]   Can't download book. [CODE: " + str( response.status_code ) + "]" )
+		if os.path.isfile( bookFile ):
+			os.remove( bookFile )
 		return False
 
 def EmbeddedFontDeobfuscateIdpf( bookUid, inBuf ):
@@ -622,6 +628,8 @@ def DecryptBook( bookId ):
 					outf.writestr( zi, data )
 		except Exception as e:
 			print( "[E]   Can't decrypt book! (" + str( e ) + ")" )
+			if os.path.isfile( decFile ):
+				os.remove( decFile )
 			return False
 
 	RenameBook( bookId )
@@ -722,6 +730,7 @@ def ProcessDownloadSheet():
 		print( "[E] Can't read download sheet! (" + str( e ) + ")" )
 		return False
 
+	result = True
 	bDoSomething = False
 
 	if len( torm ) > 0:
@@ -751,25 +760,36 @@ def ProcessDownloadSheet():
 		print( "[I] Books to be downloaded: " + str( len( todl ) ) )
 		dlok = 0
 		dlng = 0
-		for bookId in todl:
-			if GetBook( bookId ):
-				dlok = dlok + 1
-			else:
-				dlng = dlng + 1
-			print( "" )
 
-		print( "[I] Download Done" )
-		print( "      OK: " + str( dlok ) )
-		print( "    Fail: " + str( dlng ) )
-		print( "" )
-		bDoSomething = True
+		bookDir = os.path.join( gOutDir, ENC_BOOKS_DIR )
+		if not os.path.exists( bookDir ):
+			try:
+				os.makedirs( bookDir )
+			except:
+				print( "[E] Can't create directory: " + os.path.abspath( bookDir ) )
+				result = False
+
+		if result:
+			for bookId in todl:
+				if GetBook( bookId ):
+					dlok = dlok + 1
+				else:
+					dlng = dlng + 1
+				print( "" )
+	
+			print( "[I] Download Done" )
+			print( "      OK: " + str( dlok ) )
+			print( "    Fail: " + str( dlng ) )
+			print( "" )
+			if dlok > 0:
+				bDoSomething = True
 
 	if bDoSomething:
 		if os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) ):
 			os.remove( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
 		os.rename( os.path.join( gOutDir, DOWNLOAD_SHEET ), os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
 
-	return True
+	return result
 
 def ParseAuthorTitleMap( mapFile ):
 	global gAuthorMap, gTitleMap
@@ -794,18 +814,55 @@ def ParseAuthorTitleMap( mapFile ):
 		pass
 
 	if len( gAuthorMap ) > 0 or len( gTitleMap ) > 0:
-		print( "[I] Load " + str( len( gAuthorMap ) ) + " author and " + str( len( gTitleMap ) ) + " title from " + AUTHOR_TITLE_MAP_FILE )
+		print( "[I] Load " + str( len( gAuthorMap ) ) + " author and " + str( len( gTitleMap ) ) + " title from " + mapFile )
 
 def ParseArgument():
+	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile
+
 	parser = argparse.ArgumentParser()
 	parser.add_argument( "-d", "--dldec", action="store_true", help="Download/decrypt books according to download sheet" )
 	parser.add_argument( "--dlall", action="store_true", help="Download all books" )
 	parser.add_argument( "--dlnew", action="store_true", help="Download books that have not downloaded yet" )
 	parser.add_argument( "--decall", action="store_true", help="Decrypt all downloaded books" )
-	parser.add_argument(  "-o", "--out", help="Output directory", default="." )
-	parser.add_argument(  "-m", "--map", help="Specify title/author map file", default=AUTHOR_TITLE_MAP_FILE )
+	parser.add_argument( "-o", "--out", help="Output directory", default="." )
+	parser.add_argument( "-m", "--map", help="Specify title/author map file" )
+	parser.add_argument( "--proxy-host", help="Proxy IP address" )
+	parser.add_argument( "--proxy-port", help="Proxy port number", type=int )
+	parser.add_argument( "--proxy-user", help="Proxy user name" )
+	parser.add_argument( "--proxy-password", help="Proxy password" )
+	parser.add_argument( "--no-verify", action="store_true", help="Do not verify SSL CA" )
 
-	return parser.parse_args()
+	args = parser.parse_args()
+	gOutDir = args.out
+
+	if args.no_verify:
+		gSslVerify = False
+
+	if args.dlall:
+		gDownloadAll = True
+	elif args.dlnew:
+		gDownloadNew = True
+	elif args.decall:
+		gDecryptAll = True
+	elif not args.dldec:
+		gNeedProcess = False
+
+	if args.proxy_host and args.proxy_port:
+		proxy = args.proxy_host + ":" + str( args.proxy_port )
+		if args.proxy_user and args.proxy_password:
+			auth = args.proxy_user + ":" + args.proxy_password
+			gProxy = {
+				'http'  : 'http://' + auth + "@" + proxy,
+				'https' : 'https://' + auth + "@" + proxy
+			}
+		else:
+			gProxy = {
+				'http'  : 'http://' + proxy,
+				'https' : 'https://' + proxy
+			}
+
+	if args.map and len( args.map ) > 0:
+		gMapFile = args.map
 
 if __name__ == '__main__':
 
@@ -828,22 +885,10 @@ if __name__ == '__main__':
 	if not CheckBookDir():
 		sys.exit( 1 )
 
-	args = ParseArgument()
+	ParseArgument()
 
-	gOutDir = args.out
-	ParseAuthorTitleMap( args.map )
-
-	bProcess = True
-	if args.dlall:
-		gDownloadAll = True
-	elif args.dlnew:
-		gDownloadNew = True
-	elif args.decall:
-		gDecryptAll = True
-	elif not args.dldec:
-		bProcess = False
-		
-	if bProcess:
+	if gNeedProcess:
+		ParseAuthorTitleMap( gMapFile )
 		ProcessDownloadSheet()
 
 	GenerateDownloadSheet()
