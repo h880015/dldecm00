@@ -418,9 +418,13 @@ def GetBookUid( decryptor, fEpub ):
 def ChangeTitle( data, newTitle ):
 	opf = etree.fromstring( data )
 	elTitle = opf.find( 'opf:metadata', NSMAP ).find( 'dc:title', NSMAP )
+	if not elTitle:
+		print( "[W]   Can't find title in OPF!" )
+		return data
+
 	oldTitle = elTitle.text
 	if oldTitle == newTitle:
-		print( "[N]    New title is the same as title in OPF" )
+		print( "[N]   New title is the same as title in OPF" )
 		return data
 
 	if "\r\n".encode( "utf-8" ) in data:
@@ -430,19 +434,23 @@ def ChangeTitle( data, newTitle ):
 
 	lines = data.decode( "utf-8" ).split( lineEnd )
 
-	patTitle = re.compile( "^(.*<dc:title[^>]*>).+(<\/dc:title>.*)$" )
-	bChanged = False
+	patTitle = re.compile( "^(.*<dc:title[^>]*>)(.+)(<\/dc:title>.*)$" )
+	bFound = False
 	for i in range( len( lines ) ):
 		l = lines[ i ]
 		if "dc:title" in l:
 			result = patTitle.match( l )
 			if result:
-				lines[ i ] = result.group( 1 ) + newTitle + result.group( 2 )
-				print( "      Change title in <dc:title>")
-				bChanged = True
+				bFound = True
+				oldTitle = result.group( 2 )
+				if oldTitle != newTitle:
+					lines[ i ] = result.group( 1 ) + newTitle + result.group( 3 )
+					print( "      Change title in <dc:title> (" + oldTitle + " -> " + newTitle + ")" )
+				else:
+					print( "      (<dc:title> is correct, no change)")
 				break
 
-	if not bChanged:
+	if not bFound:
 		print( "[W]   Can't find <dc:title> in OPF!" )
 		return data
 
@@ -450,18 +458,23 @@ def ChangeTitle( data, newTitle ):
 	if idTitle:
 		metas = opf.find( 'opf:metadata', NSMAP ).findall( 'opf:meta[@refines="#' + idTitle + '"]', NSMAP )
 		if metas and metas[0].text != newTitle:
-			patTitle2 = re.compile( '^(.*<meta refines="#' + idTitle + '"[^>]*>).+(<\/meta>.*)$' )
-			bChanged = False
+			patTitle2 = re.compile( '^(.*<meta refines="#' + idTitle + '"[^>]*>)(.+)(<\/meta>.*)$' )
+			bFound = False
 			for i in range( len( lines ) ):
 				l = lines[ i ]
 				if ('refines="#' + idTitle) in l:
 					result2 = patTitle2.match( l )
 					if result2:
-						lines[ i ] = result2.group( 1 ) + newTitle + result2.group( 2 )
-						print( "      Change title in <meta refines>")
-						bChanged = True
+						bFound = True
+						oldTitle = result2.group( 2 )
+						if oldTitle != newTitle:
+							lines[ i ] = result2.group( 1 ) + newTitle + result2.group( 3 )
+							print( "      Change title in <meta refines> (" + oldTitle + " -> " + newTitle + ")" )
+						else:
+							print( "      (<meta refines> author is correct, no change)")
 						break
-			if not bChanged:
+
+			if not bFound:
 				print( "[W]   Can't change <meta refines> title in OPF!" )
 
 	data = lineEnd.join( lines ).encode( "utf-8" )
@@ -471,9 +484,13 @@ def ChangeTitle( data, newTitle ):
 def ChangeAuthor( data, newAuthor ):
 	opf = etree.fromstring( data )
 	elAuthor = opf.find( 'opf:metadata', NSMAP ).find( 'dc:creator', NSMAP )
+	if not elAuthor:
+		print( "[W]   Can't find author in OPF!" )
+		return data
+
 	oldAuthor = elAuthor.text
 	if oldAuthor == newAuthor:
-		print( "[N]    New author is the same as author in OPF" )
+		print( "[N]   New author is the same as author in OPF" )
 		return data
 
 	if "\r\n".encode( "utf-8" ) in data:
@@ -483,19 +500,23 @@ def ChangeAuthor( data, newAuthor ):
 
 	lines = data.decode( "utf-8" ).split( lineEnd )
 
-	patAuthor = re.compile( "^(.*<dc:creator[^>]*>).+(<\/dc:creator>.*)$" )
-	bChanged = False
+	patAuthor = re.compile( "^(.*<dc:creator[^>]*>)(.+)(<\/dc:creator>.*)$" )
+	bFound = False
 	for i in range( len( lines ) ):
 		l = lines[ i ]
 		if "dc:creator" in l:
 			result = patAuthor.match( l )
 			if result:
-				lines[ i ] = result.group( 1 ) + newAuthor + result.group( 2 )
-				print( "      Change author in <dc:creator>")
-				bChanged = True
+				bFound = True
+				oldAuthor = result.group( 2 )
+				if oldAuthor != newAuthor:
+					lines[ i ] = result.group( 1 ) + newAuthor + result.group( 3 )
+					print( "      Change author in <dc:creator> (" + oldAuthor + " -> " + newAuthor + ")" )
+				else:
+					print( "      (<dc:creator> is correct, no change)" )
 				break
 
-	if not bChanged:
+	if not bFound:
 		print( "[W]   Can't find <dc:creator> in OPF!" )
 		return data
 
@@ -503,19 +524,24 @@ def ChangeAuthor( data, newAuthor ):
 	if idAuthor:
 		metas = opf.find( 'opf:metadata', NSMAP ).findall( 'opf:meta[@refines="#' + idAuthor + '"][@property="file-as"]', NSMAP )
 		if metas and metas[0].text != newAuthor:
-			patAuthor2 = re.compile( '^(.*<meta refines="#' + idAuthor + '"[^>]*>).+(<\/meta>.*)$' )
-			bChanged = False
+			patAuthor2 = re.compile( '^(.*<meta refines="#' + idAuthor + '"[^>]*>)(.+)(<\/meta>.*)$' )
+			bFound = False
 			for i in range( len( lines ) ):
 				l = lines[ i ]
 				if ('refines="#' + idAuthor) in l and 'property="file-as"' in l:
 					result2 = patAuthor2.match( l )
 					if result2:
-						lines[ i ] = result2.group( 1 ) + newAuthor + result2.group( 2 )
-						print( "      Change author in <meta refines>")
-						bChanged = True
+						bFound = True
+						oldAuthor = result2.group( 2 )
+						if oldAuthor != newAuthor:
+							lines[ i ] = result2.group( 1 ) + newAuthor + result2.group( 3 )
+							print( "      Change author in <meta refines> (" + oldAuthor + " -> " + newAuthor + ")" )
+						else:
+							print( "      (<meta refines> author is correct, no change)" )
 						break
-			if not bChanged:
-				print( "[W]   Can't change <meta refines> author in OPF!" )
+
+			if not bFound:
+				print( "[W]   Can't find <meta refines> author in OPF!" )
 
 	data = lineEnd.join( lines ).encode( "utf-8" )
 
