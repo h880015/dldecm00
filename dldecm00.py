@@ -32,7 +32,7 @@ SECRET4 = CaesarCipher( "lnnpdd_ezvpy", -11 )
 SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
-APP_VERSION = "v1.3"
+APP_VERSION = "v1.4"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -56,6 +56,7 @@ EXT_EPUB = ".epub"
 DOWNLOAD_SHEET = SECRET1 + "Books.txt"
 DOWNLOAD_SHEET_BAK = SECRET1 + "Books.bak"
 AUTHOR_TITLE_MAP_FILE = "author_title_map.txt"
+BOOK_LIST = "booklist.txt"
 
 OBFUSCATED_LENGTH_IDPF = 1040
 
@@ -84,6 +85,7 @@ gSslVerify = True
 gMapFile = None
 gDbFile = None
 gMaxDownload = -1
+gGenBooklist = False
 
 gDownloadCount = 0
 
@@ -221,6 +223,34 @@ def GetDlBooks():
 
 def DownloadSheetExist():
 	return os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET ) )
+
+def GenerateBooklist():
+	booklist = os.path.abspath( os.path.join( gOutDir, BOOK_LIST ) )
+
+	count = 0
+	try:
+		with open( booklist, "w", encoding="utf8" ) as f:
+			epubs = glob.glob( os.path.join( gOutDir, DEC_BOOKS_DIR, "*.epub" ) )
+			print( "[I] Generating book list. Found " + str( len( epubs ) ) + " ePub files ..." )
+			for epub in epubs:
+				with closing( ZipFile( open( epub, "rb" ) ) ) as inf:
+					opfs = GetOpfNamesFromEpub( inf )
+					for fOpf in opfs:
+						title, author = GetBookInfo( inf.read( fOpf ) )
+						if title != "" or author != "":
+							f.write( title + " : " + author + "\n" )
+							count = count + 1
+							break
+
+			f.write( "\n" )				
+
+	except IOError as e:
+		print( "[E] Can't write book list! (" + str( e ) + ")" )
+		return False
+
+	print( "[I] Book list generated for " + str( count ) + " books" )
+
+	return True
 
 def GenerateDownloadSheet():
 	GetDlBooks()
@@ -574,17 +604,26 @@ def ChangeAuthor( data, newAuthor ):
 
 	return data
 
-def ShowBookInfo( data ):
+def GetBookInfo( data ):
 	try:
 		opf = etree.fromstring( data )
 		title = opf.find( 'opf:metadata', NSMAP ).find( 'dc:title', NSMAP ).text
+		if title is None:
+			title = ""
 		author = opf.find( 'opf:metadata', NSMAP ).find( 'dc:creator', NSMAP ).text
-		if title is not None and title != "":
-			print( "      Title  : " + title )
-		if author is not None and author != "":
-			print( "      Author : " + author )
+		if author is None:
+			author = ""
 	except:
 		pass
+
+	return title, author
+
+def ShowBookInfo( data ):
+	title, author = GetBookInfo( data )
+	if title != "":
+		print( "      Title  : " + title )
+	if author != "":
+		print( "      Author : " + author )
 
 def DecryptBook( bookId ):
 	print( "[I] Decrypt  book: " + bookId + " [" +  gBookData[ bookId ][0] + "]" )
@@ -881,7 +920,7 @@ def ParseAuthorTitleMap( mapFile ):
 		print( "[I] Load " + str( len( gAuthorMap ) ) + " author and " + str( len( gTitleMap ) ) + " title from " + mapFile )
 
 def ParseArgument():
-	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile, gDbFile, gMaxDownload
+	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile, gDbFile, gMaxDownload, gGenBooklist
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument( "-d", "--dldec", action="store_true", help="Download/decrypt books according to download sheet" )
@@ -897,6 +936,7 @@ def ParseArgument():
 	parser.add_argument( "--proxy-password", help="Proxy password" )
 	parser.add_argument( "--no-verify", action="store_true", help="Do not verify SSL CA" )
 	parser.add_argument( "-n", "--numdl", type=int, help="Max number of downloads" )
+	parser.add_argument( "-l", "--list", action="store_true", help="Generate book list" )
 
 	args = parser.parse_args()
 	gOutDir = args.out
@@ -936,6 +976,9 @@ def ParseArgument():
 	if args.numdl:
 		gMaxDownload = args.numdl
 
+	if args.list:
+		gGenBooklist = True
+
 if __name__ == '__main__':
 
 	print( "" )
@@ -958,8 +1001,11 @@ if __name__ == '__main__':
 		sys.exit( 1 )
 
 	ParseArgument()
-
-	if gNeedProcess:
+	
+	if gGenBooklist:
+		GenerateBooklist()
+		sys.exit( 0 )
+	elif gNeedProcess:
 		ParseAuthorTitleMap( gMapFile )
 		ProcessDownloadSheet()
 
