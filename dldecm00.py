@@ -31,7 +31,7 @@ SECRET4 = CaesarCipher( "lnnpdd_ezvpy", -11 )
 SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
-APP_VERSION = "v1.1"
+APP_VERSION = "v1.2"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -418,7 +418,7 @@ def GetBookUid( decryptor, fEpub ):
 def ChangeTitle( data, newTitle ):
 	opf = etree.fromstring( data )
 	elTitle = opf.find( 'opf:metadata', NSMAP ).find( 'dc:title', NSMAP )
-	if not elTitle:
+	if elTitle is None:
 		print( "[W]   Can't find title in OPF!" )
 		return data
 
@@ -484,7 +484,7 @@ def ChangeTitle( data, newTitle ):
 def ChangeAuthor( data, newAuthor ):
 	opf = etree.fromstring( data )
 	elAuthor = opf.find( 'opf:metadata', NSMAP ).find( 'dc:creator', NSMAP )
-	if not elAuthor:
+	if elAuthor is None:
 		print( "[W]   Can't find author in OPF!" )
 		return data
 
