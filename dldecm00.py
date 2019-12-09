@@ -21,6 +21,7 @@ import base64
 import xml.etree.ElementTree as etree
 from contextlib import closing
 from clint.textui import progress
+from enum import Enum
 
 from caesarcipher import CaesarCipher
 
@@ -31,7 +32,7 @@ SECRET4 = CaesarCipher( "lnnpdd_ezvpy", -11 )
 SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
-APP_VERSION = "v1.2"
+APP_VERSION = "v1.3"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -58,6 +59,11 @@ AUTHOR_TITLE_MAP_FILE = "author_title_map.txt"
 
 OBFUSCATED_LENGTH_IDPF = 1040
 
+class EResult( Enum ):
+	OKAY = 1
+	NO_GOOD = 2
+	SKIP = 3
+
 gRsaKey = None
 gUserId = None
 gAccessToken = None
@@ -76,6 +82,11 @@ gOutDir = "."
 gProxy = { 'no': 'pass' }
 gSslVerify = True
 gMapFile = None
+gDbFile = None
+gMaxDownload = -1
+
+gDownloadCount = 0
+
 
 def _load_crypto_pycryptodome():
 	"""
@@ -120,21 +131,31 @@ def SystemChecking():
 
 	return True
 
+def OpenDb():
+	global gDbFile
+
+	try:
+		if gDbFile:
+			dbFile = gDbFile
+		else:
+			localAppData = os.getenv( "LOCALAPPDATA" )
+			dbFile = os.path.join( localAppData, DB_DIR, DB_FILE_NAME )
+		return sqlite3.connect( dbFile )
+	except:
+		print( "[E] Can't open DB file!" )
+		return None
+
 def CollectBookInfo():
 	global gAccessToken, gClientId, gRsaKey, gUserId
 	global gArchiveData, gBookData
 
-	localAppData = os.getenv( "LOCALAPPDATA" )
-	
-	dbFile = os.path.join( localAppData, DB_DIR, DB_FILE_NAME )
-	if not os.path.isfile( dbFile ):
-		print( "[E] Can't find DB file! (" + SECRET1 + " application not installed?)" )
+	conn = OpenDb()
+	if conn is None:
 		return False
 
-	conn = sqlite3.connect( dbFile )
 	cursor = conn.execute( CaesarCipher( "COVOMD fkveo PBYW SdowDklvo GROBO uoi='__yk__'", -10 ) )
 	data = cursor.fetchone()
-	if not data:
+	if data is None:
 		print( "[E] Can't get data from DB!" )
 		return False
 	else:
@@ -144,7 +165,7 @@ def CollectBookInfo():
 
 	cursor = conn.execute( CaesarCipher( "KWDWUL nsdmw XJGE AlweLstdw OZWJW cwq='jks_hjanslwCwq'", -18 ) )
 	data = cursor.fetchone()
-	if not data:
+	if data is None:
 		print( "[E] Can't get data from DB!" )
 		return False
 	else:
@@ -153,7 +174,7 @@ def CollectBookInfo():
 
 	cursor = conn.execute( CaesarCipher( "AMTMKB ditcm NZWU QbmuBijtm EPMZM smg='-ve-camzql'", -8 ) )
 	data = cursor.fetchone()
-	if not data:
+	if data is None:
 		print( "[E] Can't get data from DB!" )
 		return False
 	else:
@@ -161,7 +182,7 @@ def CollectBookInfo():
 
 	cursor = conn.execute( CaesarCipher( "KWDWUL nsdmw XJGE AlweLstdw OZWJW cwq='-fo-datjsjq'", -18 ) )
 	data = cursor.fetchone()
-	if not data:
+	if data is None:
 		print( "[E] Can't get data from DB!" )
 		return False
 	else:
@@ -256,9 +277,14 @@ def GenerateDownloadSheet():
 	return True
 
 def DownloadBook( bookId ):
+	global gDownloadCount, gMaxDownload
+
 	if not bookId in gBookData.keys():
 		print( "[E] You don't have book " + bookId + " !" )
-		return False
+		return EResult.NO_GOOD
+
+	if gMaxDownload > 0 and gDownloadCount >= gMaxDownload:
+		return EResult.SKIP
 
 	print( "[I] Download book: " + bookId + " [" +  gBookData[ bookId ][0] + "]" )
 	downloadEpubUrl = "https://api." + SECRET2 + ".com/epub/" + bookId + "?" + SECRET3 + "=" + gClientId + "&" + SECRET4 + "=" + gAccessToken
@@ -280,15 +306,16 @@ def DownloadBook( bookId ):
 		print( "[E]   Can't save file! (" + str( e ) + ")" )
 		if os.path.isfile( bookFile ):
 			os.remove( bookFile )
-		return False
+		return EResult.NO_GOOD
 
 	if response.status_code == 200:
-		return True
+		gDownloadCount = gDownloadCount + 1
+		return EResult.OKAY
 	else:
 		print( "[E]   Can't download book. [CODE: " + str( response.status_code ) + "]" )
 		if os.path.isfile( bookFile ):
 			os.remove( bookFile )
-		return False
+		return EResult.NO_GOOD
 
 def EmbeddedFontDeobfuscateIdpf( bookUid, inBuf ):
 	from Crypto.Hash import SHA1
@@ -567,11 +594,11 @@ def DecryptBook( bookId ):
 
 	if not os.path.isfile( encFile ):
 		print( "[E]   File not found: " + encFile )
-		return False
+		return EResult.NO_GOOD
 
 	if not CheckEpubIntegrity( bookId ):
 		print( "[E]   Can't open ePub file! (Re-download)" )
-		return False
+		return EResult.NO_GOOD
 
 	with closing( ZipFile( open( encFile, "rb" ) ) ) as inf:
 		namelist = set( inf.namelist() )
@@ -581,7 +608,7 @@ def DecryptBook( bookId ):
 			if os.path.isfile( decFile ):
 				os.remove( decFile )
 			shutil.copyfile( encFile, decFile )
-			return True
+			return EResult.OKAY
 
 		for name in META_NAMES:
 			namelist.remove(name)
@@ -592,12 +619,12 @@ def DecryptBook( bookId ):
 			aesKeyB64 = encryption.findtext( './/enc:CipherValue', None, NSMAP )
 			if aesKeyB64 is None:
 				print( "[E]   Can't find encrypted AES key!" )
-				return False
+				return EResult.NO_GOOD
 
 			bookkey = gRsaKey.decrypt( base64.b64decode( aesKeyB64 ) )
 			if bookkey is None:
 				print( "[E]   Can't decrypt AES key!" )
-				return False
+				return EResult.NO_GOOD
 
 			print( "      AES KEY = {0}".format( ''.join( hex( x )[2:].zfill( 2 ) for x in bookkey).upper() ) )
 
@@ -656,11 +683,11 @@ def DecryptBook( bookId ):
 			print( "[E]   Can't decrypt book! (" + str( e ) + ")" )
 			if os.path.isfile( decFile ):
 				os.remove( decFile )
-			return False
+			return EResult.NO_GOOD
 
 	RenameBook( bookId )
 
-	return True
+	return EResult.OKAY
 
 def RenameBook( bookId ):
 	if not bookId in gBookData.keys():
@@ -682,11 +709,11 @@ def RenameBook( bookId ):
 	return True
 
 def GetBook( bookId ):
-	if DownloadBook( bookId ):
-		if DecryptBook( bookId ):
-			return True
+	result = DownloadBook( bookId )
+	if result == EResult.OKAY:
+		result = DecryptBook( bookId )
 
-	return False
+	return result
 
 def CheckEpubIntegrity( bookId ):
 	bookFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
@@ -773,11 +800,12 @@ def ProcessDownloadSheet():
 		decok = 0
 		decng = 0
 		for bookId in todec:
-			if DecryptBook( bookId ):
+			result = DecryptBook( bookId )
+			if result == EResult.OKAY:
 				decok = decok + 1
 			else:
 				decng = decng + 1
-				todl.append( bookId )
+				todl.append( bookId )				
 			print( "" )
 
 		print( "[I] Decrypt Done" )
@@ -790,6 +818,7 @@ def ProcessDownloadSheet():
 		print( "[I] Books to be downloaded: " + str( len( todl ) ) )
 		dlok = 0
 		dlng = 0
+		dlskip = 0
 
 		bookDir = os.path.join( gOutDir, ENC_BOOKS_DIR )
 		if not os.path.exists( bookDir ):
@@ -801,15 +830,20 @@ def ProcessDownloadSheet():
 
 		if result:
 			for bookId in todl:
-				if GetBook( bookId ):
+				result = GetBook( bookId )
+				if result == EResult.OKAY:
 					dlok = dlok + 1
-				else:
+				elif result == EResult.NO_GOOD:
 					dlng = dlng + 1
+				elif result == EResult.SKIP:
+					dlskip = dlskip + 1
+
 				print( "" )
 	
 			print( "[I] Download Done" )
 			print( "      OK: " + str( dlok ) )
 			print( "    Fail: " + str( dlng ) )
+			print( "    Skip: " + str( dlskip ) )
 			print( "" )
 			if dlok > 0:
 				bDoSomething = True
@@ -847,7 +881,7 @@ def ParseAuthorTitleMap( mapFile ):
 		print( "[I] Load " + str( len( gAuthorMap ) ) + " author and " + str( len( gTitleMap ) ) + " title from " + mapFile )
 
 def ParseArgument():
-	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile
+	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile, gDbFile, gMaxDownload
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument( "-d", "--dldec", action="store_true", help="Download/decrypt books according to download sheet" )
@@ -856,11 +890,13 @@ def ParseArgument():
 	parser.add_argument( "--decall", action="store_true", help="Decrypt all downloaded books" )
 	parser.add_argument( "-o", "--out", help="Output directory", default="." )
 	parser.add_argument( "-m", "--map", help="Specify title/author map file" )
+	parser.add_argument( "--dbfile", help="Specify database file" )
 	parser.add_argument( "--proxy-host", help="Proxy IP address" )
 	parser.add_argument( "--proxy-port", help="Proxy port number", type=int )
 	parser.add_argument( "--proxy-user", help="Proxy user name" )
 	parser.add_argument( "--proxy-password", help="Proxy password" )
 	parser.add_argument( "--no-verify", action="store_true", help="Do not verify SSL CA" )
+	parser.add_argument( "-n", "--numdl", type=int, help="Max number of downloads" )
 
 	args = parser.parse_args()
 	gOutDir = args.out
@@ -893,6 +929,12 @@ def ParseArgument():
 
 	if args.map and len( args.map ) > 0:
 		gMapFile = args.map
+
+	if args.dbfile and len( args.dbfile ) > 0:
+		gDbFile = args.dbfile
+
+	if args.numdl:
+		gMaxDownload = args.numdl
 
 if __name__ == '__main__':
 
