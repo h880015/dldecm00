@@ -32,7 +32,7 @@ SECRET4 = CaesarCipher( "lnnpdd_ezvpy", -11 )
 SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
-APP_VERSION = "v1.4"
+APP_VERSION = "v1.5"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -50,8 +50,11 @@ DB_FILE_NAME = "app_" + SECRET2 + "_0." + CaesarCipher( "ruigryzuxgmk", -6 )
 
 DEC_BOOKS_DIR = CaesarCipher( "WirQngwfwd", -5 )
 ENC_BOOKS_DIR = os.path.join( DEC_BOOKS_DIR, "enc" )
+KEY_FILE_NAME_GLOB = CaesarCipher( "fradfwjysm*.dsa", -14 )
+KEY_FILE_NAME = CaesarCipher( "zluxzqdsmg", -8 )
 
 EXT_EPUB = ".epub"
+EXT_PEM = ".pem"
 
 DOWNLOAD_SHEET = SECRET1 + "Books.txt"
 DOWNLOAD_SHEET_BAK = SECRET1 + "Books.bak"
@@ -59,13 +62,15 @@ AUTHOR_TITLE_MAP_FILE = "author_title_map.txt"
 BOOK_LIST = "booklist.txt"
 
 OBFUSCATED_LENGTH_IDPF = 1040
+ERROR_LIMITS = 10
+MAX_KEY_FILES = 1024
 
 class EResult( Enum ):
 	OKAY = 1
 	NO_GOOD = 2
 	SKIP = 3
 
-gRsaKey = None
+gRsaKeys = []
 gUserId = None
 gAccessToken = None
 gClientId = None
@@ -109,7 +114,8 @@ def _load_crypto_pycryptodome():
 	class RSA(object):
 		def __init__(self, der):
 			key = _import_key( der )
-			self._rsa = _PKCS1.new(key)
+			self._rsa = _PKCS1.new( key )
+			self._key = key
 
 		def decrypt(self, data):
 			return self._rsa.decrypt(data, None)
@@ -148,7 +154,7 @@ def OpenDb():
 		return None
 
 def CollectBookInfo():
-	global gAccessToken, gClientId, gRsaKey, gUserId
+	global gAccessToken, gClientId, gRsaKeys, gUserId
 	global gArchiveData, gBookData
 
 	conn = OpenDb()
@@ -172,7 +178,7 @@ def CollectBookInfo():
 		return False
 	else:
 		privateKey = data[0].decode( "utf-16-le" )
-		gRsaKey = RSA( privateKey )
+		gRsaKeys.append( RSA( privateKey ) )
 
 	cursor = conn.execute( CaesarCipher( "AMTMKB ditcm NZWU QbmuBijtm EPMZM smg='-ve-camzql'", -8 ) )
 	data = cursor.fetchone()
@@ -203,8 +209,45 @@ def CollectBookInfo():
 
 	return True
 
+def CollectKeys():
+	for kf in glob.glob( os.path.join( gOutDir, KEY_FILE_NAME_GLOB ) ):
+		try:
+			with open( kf, "rb" ) as f:
+				keyBytes = f.read()
+			gRsaKeys.append( RSA( keyBytes ) )
+			print( "[I] Key loaded from " + kf )
+		except:
+			continue
+
+	bFound = False
+	for idx in range( 1, len( gRsaKeys ) ):
+		if gRsaKeys[ idx ]._key == gRsaKeys[ 0 ]._key:
+			gRsaKeys.pop( idx )
+			bFound = True
+			break
+
+	if not bFound:
+		fileIdx = 1
+		while fileIdx < MAX_KEY_FILES:
+			keyFile = os.path.join( gOutDir, KEY_FILE_NAME + "." + str( fileIdx ) + EXT_PEM )
+			if not os.path.isfile( keyFile ):
+				break
+
+			fileIdx = fileIdx + 1
+
+		if fileIdx >=  MAX_KEY_FILES:
+			print( "[W] Too many key files!" )
+
+		with open( keyFile, "wb" ) as f:
+			f.write( gRsaKeys[0]._key.exportKey( format='PEM' ) )
+		print( "[I] Key file created (" + str( fileIdx ) + ")" )
+
+	print( "[I] Number of key(s) = " + str( len( gRsaKeys ) ) )
+
+	return True
+
 def CheckBookDir():
-	if not os.path.exists( os.path.join( gOutDir, ENC_BOOKS_DIR ) ):
+	if not os.path.isdir( os.path.join( gOutDir, ENC_BOOKS_DIR ) ):
 		try:
 			os.makedirs( os.path.join( gOutDir, ENC_BOOKS_DIR ) )
 		except:
@@ -660,7 +703,11 @@ def DecryptBook( bookId ):
 				print( "[E]   Can't find encrypted AES key!" )
 				return EResult.NO_GOOD
 
-			bookkey = gRsaKey.decrypt( base64.b64decode( aesKeyB64 ) )
+			for k in gRsaKeys:
+				bookkey = k.decrypt( base64.b64decode( aesKeyB64 ) )
+				if bookkey is not None:
+					break
+
 			if bookkey is None:
 				print( "[E]   Can't decrypt AES key!" )
 				return EResult.NO_GOOD
@@ -844,14 +891,16 @@ def ProcessDownloadSheet():
 				decok = decok + 1
 			else:
 				decng = decng + 1
-				todl.append( bookId )				
+				if not gDecryptAll:
+					todl.append( bookId )				
 			print( "" )
 
 		print( "[I] Decrypt Done" )
 		print( "      OK: " + str( decok ) )
 		print( "    Fail: " + str( decng ) )
 		print( "" )
-		bDoSomething = True
+		if decok > 0:
+			bDoSomething = True
 
 	if len( todl ) > 0:
 		print( "[I] Books to be downloaded: " + str( len( todl ) ) )
@@ -860,7 +909,7 @@ def ProcessDownloadSheet():
 		dlskip = 0
 
 		bookDir = os.path.join( gOutDir, ENC_BOOKS_DIR )
-		if not os.path.exists( bookDir ):
+		if not os.path.isdir( bookDir ):
 			try:
 				os.makedirs( bookDir )
 			except:
@@ -997,10 +1046,13 @@ if __name__ == '__main__':
 	if not CollectBookInfo():
 		sys.exit( 1 )
 
+	ParseArgument()
+
 	if not CheckBookDir():
 		sys.exit( 1 )
 
-	ParseArgument()
+	if not CollectKeys():
+		sys.exit( 1 )
 	
 	if gGenBooklist:
 		GenerateBooklist()
@@ -1010,3 +1062,4 @@ if __name__ == '__main__':
 		ProcessDownloadSheet()
 
 	GenerateDownloadSheet()
+
