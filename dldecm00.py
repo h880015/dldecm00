@@ -15,6 +15,7 @@ import sqlite3
 import json
 import glob
 import requests
+import time
 import zipfile
 from zipfile import ZipInfo, ZipFile, ZIP_STORED, ZIP_DEFLATED
 import base64
@@ -32,7 +33,7 @@ SECRET4 = CaesarCipher( "lnnpdd_ezvpy", -11 )
 SECRET5 = CaesarCipher( "byrhqho_yjuc", -16 )
 
 APP_TITLE = SECRET1 + CaesarCipher( " Huuqy Juctrugjkx & Jkixevzux", -6 )
-APP_VERSION = "v1.5"
+APP_VERSION = "v1.6"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -60,15 +61,25 @@ DOWNLOAD_SHEET = SECRET1 + "Books.txt"
 DOWNLOAD_SHEET_BAK = SECRET1 + "Books.bak"
 AUTHOR_TITLE_MAP_FILE = "author_title_map.txt"
 BOOK_LIST = "booklist.txt"
+BOOK_INFO = "bookinfo.txt"
 
 OBFUSCATED_LENGTH_IDPF = 1040
 ERROR_LIMITS = 10
 MAX_KEY_FILES = 1024
+PAUSE_BETWEEN_RETRY = [ 13, 23, 47, 79, 127 ]
+RETRY_LIMIT = len( PAUSE_BETWEEN_RETRY )
 
 class EResult( Enum ):
 	OKAY = 1
 	NO_GOOD = 2
 	SKIP = 3
+
+class CBookInfo( object ):
+	def __init__( self ):
+		self._id = ""
+		self._title = ""
+		self._author = ""
+		self._aeskey = ""
 
 gRsaKeys = []
 gUserId = None
@@ -91,6 +102,8 @@ gMapFile = None
 gDbFile = None
 gMaxDownload = -1
 gGenBooklist = False
+
+gCurBook = CBookInfo()
 
 gDownloadCount = 0
 
@@ -264,11 +277,12 @@ def GetDlBooks():
 	for f in glob.glob( os.path.join( gOutDir, ENC_BOOKS_DIR, "*.epub" ) ):
 		gDlBooks.append( os.path.splitext( os.path.basename( f ) )[0] )
 
+
 def DownloadSheetExist():
 	return os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET ) )
 
 def GenerateBooklist():
-	booklist = os.path.abspath( os.path.join( gOutDir, BOOK_LIST ) )
+	booklist = os.path.join( gOutDir, BOOK_LIST )
 
 	count = 0
 	try:
@@ -382,8 +396,74 @@ def DownloadBook( bookId ):
 		return EResult.NO_GOOD
 
 	if response.status_code == 200:
+		# fileSize = os.path.getsize( bookFile )
+		# while fileSize < total_length:
+		# 	print( "[W] Content-Length = " + str( total_length ) + ", File Size = " + str( fileSize ) )
+		# 
+		# 	time.sleep( PAUSE_BETWEEN_RETRY )
+		# 
+		# 	resume_header = { 'Range' : 'bytes=%d-' % fileSize }
+		# 	response = requests.get( downloadEpubUrl, headers = resume_header, stream = True, verify=gSslVerify, proxies=gProxy )
+		# 
+		# 	try:
+		# 		with open( bookFile, "ab" ) as f:
+		# 			remain_length = int( response.headers.get( "content-length" ) )
+		# 			chunk_size = 1024
+		# 			expected_size = (remain_length / chunk_size) + 1
+		# 			for chunk in progress.bar( response.iter_content( chunk_size = chunk_size ), expected_size = expected_size ):
+		# 				if chunk:
+		# 					f.write( chunk )
+		# 					f.flush()
+		# 	except Exception as e:
+		# 		print( "[E]   Can't save file! (" + str( e ) + ")" )
+		# 		if os.path.isfile( bookFile ):
+		# 			os.remove( bookFile )
+		# 		return EResult.NO_GOOD
+		# 
+		# 	fileSize = os.path.getsize( bookFile )
+
+		fileSize = os.path.getsize( bookFile )
+		retry = 0
+		while fileSize != total_length:
+			if retry >= RETRY_LIMIT:
+				print( "[E] Can't download book!" )
+				if os.path.isfile( bookFile ):
+					os.remove( bookFile )
+				return EResult.NO_GOOD
+
+			print( "[W] Content-Length = " + str( total_length ) + ", File Size = " + str( fileSize ) )
+			os.remove( bookFile )
+
+			time.sleep( PAUSE_BETWEEN_RETRY[ retry ] )
+			retry = retry + 1
+
+			response = requests.get( downloadEpubUrl, stream = True, verify=gSslVerify, proxies=gProxy )
+			try:
+				with open( bookFile, "wb" ) as f:
+					total_length_retry = int( response.headers.get( "content-length" ) )
+					chunk_size = 1024
+					expected_size = (total_length_retry / chunk_size) + 1
+					for chunk in progress.bar( response.iter_content( chunk_size = chunk_size ), expected_size = expected_size ):
+						if chunk:
+							f.write( chunk )
+							f.flush()
+			except Exception as e:
+				print( "[E]   Can't save file! (" + str( e ) + ")" )
+				if os.path.isfile( bookFile ):
+					os.remove( bookFile )
+				return EResult.NO_GOOD
+
+			if response.status_code == 200:
+				fileSize = os.path.getsize( bookFile )
+			else:
+				print( "[E]   Can't download book. [CODE: " + str( response.status_code ) + "]" )
+				if os.path.isfile( bookFile ):
+					os.remove( bookFile )
+				return EResult.NO_GOOD
+
 		gDownloadCount = gDownloadCount + 1
 		return EResult.OKAY
+
 	else:
 		print( "[E]   Can't download book. [CODE: " + str( response.status_code ) + "]" )
 		if os.path.isfile( bookFile ):
@@ -662,13 +742,31 @@ def GetBookInfo( data ):
 	return title, author
 
 def ShowBookInfo( data ):
+	global gCurBook
+
 	title, author = GetBookInfo( data )
+
+	gCurBook._title = title
+	gCurBook._author = author
+
 	if title != "":
 		print( "      Title  : " + title )
 	if author != "":
 		print( "      Author : " + author )
 
+def SaveBookInfo():
+	bookinfo = os.path.join( gOutDir, BOOK_INFO )
+	try:
+		with open( bookinfo, "a+", encoding="utf8" ) as f:
+			f.write( "{0} : {1} : {2} : {3}\n".format( gCurBook._id, gCurBook._aeskey, gCurBook._title, gCurBook._author ) )
+		return True
+	except Exception as e:
+		print( "[W] Can't save book info (" + str( e ) + ")" )
+		return False
+
 def DecryptBook( bookId ):
+	global gCurBook
+
 	print( "[I] Decrypt  book: " + bookId + " [" +  gBookData[ bookId ][0] + "]" )
 
 	encFile = os.path.join( gOutDir, ENC_BOOKS_DIR, bookId + EXT_EPUB )
@@ -679,7 +777,7 @@ def DecryptBook( bookId ):
 		return EResult.NO_GOOD
 
 	if not CheckEpubIntegrity( bookId ):
-		print( "[E]   Can't open ePub file! (Re-download)" )
+		print( "[E]   Corrupted ePub file! (Re-download)" )
 		return EResult.NO_GOOD
 
 	with closing( ZipFile( open( encFile, "rb" ) ) ) as inf:
@@ -712,7 +810,10 @@ def DecryptBook( bookId ):
 				print( "[E]   Can't decrypt AES key!" )
 				return EResult.NO_GOOD
 
-			print( "      AES KEY = {0}".format( ''.join( hex( x )[2:].zfill( 2 ) for x in bookkey).upper() ) )
+			gCurBook._id = bookId
+			gCurBook._aeskey = ''.join( hex( x )[2:].zfill( 2 ) for x in bookkey).upper()
+
+			print( "      AES KEY = {0}".format( gCurBook._aeskey ) )			
 
 			decryptor = Decryptor( bookkey, encryption )
 			if len( decryptor._encFontIdpf ) > 0:
@@ -772,6 +873,7 @@ def DecryptBook( bookId ):
 			return EResult.NO_GOOD
 
 	RenameBook( bookId )
+	SaveBookInfo()
 
 	return EResult.OKAY
 
