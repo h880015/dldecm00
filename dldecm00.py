@@ -883,16 +883,17 @@ def RenameBook( bookId ):
 		return False
 
 	decFile = os.path.join( gOutDir, DEC_BOOKS_DIR, bookId + EXT_EPUB )
-	
+
 	if bookId in gTitleMap:
-		titleFile = os.path.join( gOutDir, DEC_BOOKS_DIR, gTitleMap[ bookId ] + EXT_EPUB )
+		safeTitle = gTitleMap[ bookId ].replace( "\\", "_" ).replace( "/", "_" ).replace( ":", "_" ).replace( "!?", "" ).replace( "?", "" )
 	else:
-		titleFile = os.path.join( gOutDir, DEC_BOOKS_DIR, gBookData[ bookId ][0] + EXT_EPUB )
+		safeTitle = gBookData[ bookId ][0].replace( "\\", "_" ).replace( "/", "_" ).replace( ":", "_" ).replace( "!?", "" ).replace( "?", "" )
+	titleFile = os.path.join( gOutDir, DEC_BOOKS_DIR, safeTitle + EXT_EPUB )
 	if os.path.isfile( titleFile ):
 		os.remove( titleFile )
 	os.rename( decFile, titleFile )
 
-	print( "[I] Book saved: " + gBookData[ bookId ][0] + EXT_EPUB )
+	print( "[I] Book saved: " + os.path.basename( titleFile ) )
 
 	return True
 
