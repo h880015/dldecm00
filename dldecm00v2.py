@@ -51,7 +51,7 @@ DEBUG_MODE = False
 USE_TQDM = False
 
 APP_TITLE = SECRET1 + " Books Downloader & Decryptor"
-APP_VERSION = "v2.2"
+APP_VERSION = "v2.3"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -1222,7 +1222,8 @@ def BuildHttpHeader():
 			gAccessToken = RetrieveToken()
 			if gAccessToken is not None:
 				SaveAccessToken()
-		except:
+		except Exception as e:
+			print( "[E] Can't retrieve access token from system: " + str( e ) )
 			pass
 
 	if gAccessToken is None:
@@ -1244,15 +1245,18 @@ def BuildHttpHeader():
 def RetrieveToken():
 	count = 0
 	token = None
+	seq = -1
 	kvPair = ParseLdbDir( os.path.join( os.getenv( SECRET10 ), SECRET3, SECRET4 ) )
 	for k in kvPair:
 		if k.endswith( SECRET5 ):
-			print( '[I] Token retrieved from system: ' + kvPair[ k ] )
+			print( '[I] Token retrieved from system: ' + kvPair[ k ][ 0 ] )		#  + " (KEY=" + k + ", SEQ=" + str( kvPair[ k ][ 1 ] ) +")" )
 			count = count + 1
-			token = kvPair[ k ]
+			if kvPair[ k ][ 1 ] > seq:
+				seq = kvPair[ k ][ 1 ]
+				token = kvPair[ k ][ 0 ]
 
 	if count > 1:
-		print( '[W] Found more than one token!' )
+		print( '[W] Found more than one token. Use token: ' + token )
 
 	return token
 
