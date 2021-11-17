@@ -51,7 +51,7 @@ DEBUG_MODE = False
 USE_TQDM = False
 
 APP_TITLE = SECRET1 + " Books Downloader & Decryptor"
-APP_VERSION = "v2.3"
+APP_VERSION = "v2.4"
 
 MIMETYPE = 'mimetype'
 ENCRYPTION_XML = "META-INF/encryption.xml"
@@ -98,6 +98,10 @@ LIBITEM_IDX_TITLE = 1
 LIBITEM_IDX_AUTHOR = 2
 LIBITEM_IDX_LICENSE = 3
 LIBITEM_IDX_ARCHIVED = 4
+LIBITEM_IDX_SIZE = 5
+LIBITEM_IDX_VERSION = 6
+LIBITEM_IDX_MODIFY = 7
+LIBITEM_NUM = 8
 
 class EResult( Enum ):
 	OKAY = 1
@@ -136,6 +140,8 @@ gGenBooklistDec = False
 gGenBooklistRaw = False
 gDecOverwrite = True
 gRedlLibitems = False
+gBookVer = False
+gUpdateBooks = False
 
 gCurBook = CBookInfo()
 
@@ -675,6 +681,7 @@ def DecryptBook( bookId ):
 
 		try:
 			encryption = etree.fromstring( inf.read( ENCRYPTION_XML ) )
+			bookkey = None
 			if os.path.isfile( lcplFile ):
 				# use LCPL if [bookid].lcpl exist
 				try:
@@ -691,9 +698,12 @@ def DecryptBook( bookId ):
 
 				isLcp = True
 				for k in gRsaKeys:
-					bookkey = k.decrypt( base64.b64decode( aesKeyB64 ) )
-					if bookkey is not None:
-						break
+					try:
+						bookkey = k.decrypt( base64.b64decode( aesKeyB64 ) )
+						if bookkey is not None:
+							break
+					except:
+						pass
 			else:
 				# get book AES key from META-INF/encryption.xml
 				aesKeyB64 = encryption.findtext( './/enc:CipherValue', None, NSMAP )
@@ -703,9 +713,12 @@ def DecryptBook( bookId ):
 	
 				isLcp = False
 				for k in gRsaKeys:
-					bookkey = k.decrypt( base64.b64decode( aesKeyB64 ) )
-					if bookkey is not None:
-						break
+					try:
+						bookkey = k.decrypt( base64.b64decode( aesKeyB64 ) )
+						if bookkey is not None:
+							break
+					except:
+						pass
 
 			if bookkey is None:
 				print( "[E]   Can't decrypt AES key!" )
@@ -867,10 +880,79 @@ def DeleteBook( bookId ):
 
 	return result
 
+def DecBooks( todec ):
+	if len( todec ) <= 0:
+		return 0
+
+	print( "[I] Books to be decrypted: " + str( len( todec ) ) )
+	print( "" )
+	decok = 0
+	decng = 0
+	for bookId in todec:
+		ret = DecryptBook( bookId )
+		if ret == EResult.OKAY:
+			decok = decok + 1
+		else:
+			decng = decng + 1
+			if not gDecryptAll:
+				todl.append( bookId )				
+		print( "" )
+
+	print( "[I] Decrypt Done" )
+	print( "      OK: " + str( decok ) )
+	print( "    Fail: " + str( decng ) )
+	print( "" )
+
+	return decok
+
+def DlBooks( todl ):
+	if len( todl ) <= 0:
+		return 0
+
+	print( "" )
+	print( "[I] Books to be downloaded: " + str( len( todl ) ) )
+	print( "" )
+	dlok = 0
+	dlng = 0
+	dlskip = 0
+
+	for bookId in todl:
+		result = GetBook( bookId )
+		if result == EResult.OKAY:
+			dlok = dlok + 1
+			print( "" )
+		elif result == EResult.NO_GOOD:
+			dlng = dlng + 1
+			print( "" )
+		elif result == EResult.SKIP:
+			dlskip = dlskip + 1
+
+
+	print( "[I] Download Done" )
+	print( "      OK: " + str( dlok ) )
+	print( "    Fail: " + str( dlng ) )
+	print( "    Skip: " + str( dlskip ) )
+	print( "" )
+
+	return dlok
+
+def BackupDownloadSheet():
+	if os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) ):
+		os.remove( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
+	os.rename( os.path.join( gOutDir, DOWNLOAD_SHEET ), os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
+
 def ProcessDownloadSheet():
 	if not DownloadSheetExist():
 		print( "[E] Download sheet not exist!" )
 		return False
+
+	bookDir = os.path.join( gOutDir, ENC_BOOKS_DIR )
+	if not os.path.isdir( bookDir ):
+		try:
+			os.makedirs( bookDir )
+		except:
+			print( "[E] Can't create directory: " + os.path.abspath( bookDir ) )
+			return False
 
 	dls = os.path.abspath( os.path.join( gOutDir, DOWNLOAD_SHEET ) )
 
@@ -896,7 +978,6 @@ def ProcessDownloadSheet():
 		print( "[E] Can't read download sheet! (" + str( e ) + ")" )
 		return False
 
-	result = True
 	bDoSomething = False
 
 	if len( torm ) > 0:
@@ -905,69 +986,16 @@ def ProcessDownloadSheet():
 			DeleteBook( bookId )
 		print( "" )
 
-	if len( todec ) > 0:
-		print( "[I] Books to be decrypted: " + str( len( todec ) ) )
-		decok = 0
-		decng = 0
-		for bookId in todec:
-			ret = DecryptBook( bookId )
-			if ret == EResult.OKAY:
-				decok = decok + 1
-			else:
-				decng = decng + 1
-				if not gDecryptAll:
-					todl.append( bookId )				
-			print( "" )
+	if DecBooks( todec ) > 0:
+		bDoSomething = True
 
-		print( "[I] Decrypt Done" )
-		print( "      OK: " + str( decok ) )
-		print( "    Fail: " + str( decng ) )
-		print( "" )
-		if decok > 0:
-			bDoSomething = True
-
-	if len( todl ) > 0:
-		print( "[I] Books to be downloaded: " + str( len( todl ) ) )
-		print( "" )
-		dlok = 0
-		dlng = 0
-		dlskip = 0
-
-		bookDir = os.path.join( gOutDir, ENC_BOOKS_DIR )
-		if not os.path.isdir( bookDir ):
-			try:
-				os.makedirs( bookDir )
-			except:
-				print( "[E] Can't create directory: " + os.path.abspath( bookDir ) )
-				result = False
-
-		if result:
-			for bookId in todl:
-				result = GetBook( bookId )
-				if result == EResult.OKAY:
-					dlok = dlok + 1
-					print( "" )
-				elif result == EResult.NO_GOOD:
-					dlng = dlng + 1
-					print( "" )
-				elif result == EResult.SKIP:
-					dlskip = dlskip + 1
-
-	
-			print( "[I] Download Done" )
-			print( "      OK: " + str( dlok ) )
-			print( "    Fail: " + str( dlng ) )
-			print( "    Skip: " + str( dlskip ) )
-			print( "" )
-			if dlok > 0:
-				bDoSomething = True
+	if DlBooks( todl ) > 0:
+		bDoSomething = True
 
 	if bDoSomething:
-		if os.path.isfile( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) ):
-			os.remove( os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
-		os.rename( os.path.join( gOutDir, DOWNLOAD_SHEET ), os.path.join( gOutDir, DOWNLOAD_SHEET_BAK ) )
+		BackupDownloadSheet()
 
-	return result
+	return True
 
 def ParseAuthorTitleMap( mapFile ):
 	global gAuthorMap, gTitleMap
@@ -1085,7 +1113,8 @@ def LoadLibraryItems():
 			if item[ 'type' ] == 'readings':
 				id = item[ 'id' ]
 				bookId = item[ 'relationships' ][ 'book' ][ 'data' ][ 'id' ]
-				gLibraryItems[ bookId ] = [ id ]
+				gLibraryItems[ bookId ] = [ None ] * LIBITEM_NUM
+				gLibraryItems[ bookId ][ LIBITEM_IDX_RID ] = id
 				gBookIdMap[ id ] = bookId
 
 		for item in jsObj[ 'included' ]:
@@ -1094,8 +1123,35 @@ def LoadLibraryItems():
 				if bookId in gLibraryItems:
 					title = item[ 'attributes' ][ 'title' ]
 					author = item[ 'attributes' ][ 'author' ]
-					gLibraryItems[ bookId ].append( title )
-					gLibraryItems[ bookId ].append( author )
+					gLibraryItems[ bookId ][ LIBITEM_IDX_TITLE ] = title
+					gLibraryItems[ bookId ][ LIBITEM_IDX_AUTHOR ] = author
+
+					fsize = 0
+					fver = ''
+					fmod = ''
+					if 'files' in item[ 'attributes' ]:
+						fidName = 'files'
+						fLen = len( item[ 'attributes' ][ fidName ] )
+						if fLen > 1:
+							print( "[W] Length of [ attributes ][ " + fidName + " ] = " + str( fLen ) )
+						fsize = int( item[ 'attributes' ][ fidName ][ 0 ][ 'filesize' ] )
+						fver = item[ 'attributes' ][ fidName ][ 0 ][ 'latest_version' ]
+						fmod = item[ 'attributes' ][ fidName ][ 0 ][ 'last_modified_at' ]
+					elif 'epub' in item[ 'attributes' ]:
+						fidName = 'epub'
+						fLen = len( item[ 'attributes' ][ fidName ] )
+						if fLen > 1:
+							print( "[W] Length of [ attributes ][ " + fidName + " ] = " + str( fLen ) )
+						fsize = int( item[ 'attributes' ][ fidName ][ 0 ][ 'filesize' ] )
+						fver = item[ 'attributes' ][ fidName ][ 0 ][ 'latest_version' ]
+						fmod = item[ 'attributes' ][ fidName ][ 0 ][ 'last_modified_at' ]
+					else:
+						print( "[W] Can't get file size for book: " + bookId )
+
+					gLibraryItems[ bookId ][ LIBITEM_IDX_SIZE ] = fsize
+					gLibraryItems[ bookId ][ LIBITEM_IDX_VERSION ] = fver
+					gLibraryItems[ bookId ][ LIBITEM_IDX_MODIFY ] = fmod
+
 				else:
 					print( "[W] Unmapped book ID: " + bookId )
 
@@ -1105,8 +1161,8 @@ def LoadLibraryItems():
 			archived = item[ 'attributes' ][ 'archive' ]
 			if id in gBookIdMap:
 				bookId = gBookIdMap[ id ]
-				gLibraryItems[ bookId ].append( lic )
-				gLibraryItems[ bookId ].append( archived )
+				gLibraryItems[ bookId ][ LIBITEM_IDX_LICENSE ] = lic
+				gLibraryItems[ bookId ][ LIBITEM_IDX_ARCHIVED ] = archived
 			else:
 				print( "[W] Unmapped ID for license url: " + id )
 
@@ -1138,81 +1194,6 @@ def SaveAccessToken():
 	except Exception as e:
 		print( "[W] Can't write token file! (" + str( e ) + ")" )
 		return False
-
-def ParseArgument():
-	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile, gMaxDownload
-	global gGenBooklistDec, gGenBooklistRaw
-	global gAccessToken, gDecOverwrite, gRedlLibitems
-
-	parser = argparse.ArgumentParser()
-	parser.add_argument( "-d", "--dldec", action="store_true", help="Download/decrypt books according to download sheet" )
-	parser.add_argument(       "--dlall", action="store_true", help="Download all books" )
-	parser.add_argument(       "--dlnew", action="store_true", help="Download books that have not downloaded yet" )
-	parser.add_argument(       "--decall", action="store_true", help="Decrypt all downloaded books" )
-	parser.add_argument( "-o", "--out", help="Output directory", default="." )
-	parser.add_argument( "-m", "--map", help="Specify title/author map file" )
-	parser.add_argument( "-t", "--token", help="Specify token (will be saved into " + TOKEN_FILE_NAME + ")" )
-	parser.add_argument(       "--proxy-host", help="Proxy IP address" )
-	parser.add_argument(       "--proxy-port", help="Proxy port number", type=int )
-	parser.add_argument(       "--proxy-user", help="Proxy user name" )
-	parser.add_argument(       "--proxy-password", help="Proxy password" )
-	parser.add_argument(       "--no-verify", action="store_true", help="Do not verify SSL CA" )
-	parser.add_argument( "-n", "--numdl", type=int, help="Max number of downloads" )
-	parser.add_argument( "-l", "--list", action="store_true", help="Generate book list for decrypted books" )
-	parser.add_argument(       "--list-raw", action="store_true", help="Generate book list for downloaded books" )
-	parser.add_argument(       "--no-overwrite", action="store_true", help="Do not overwrite existing decrypted file" )
-	parser.add_argument( "-r", "--redl", action="store_true", help="Re-download library items" )
-
-	args = parser.parse_args()
-	gOutDir = args.out
-
-	if args.no_verify:
-		gSslVerify = False
-
-	if args.dlall:
-		gDownloadAll = True
-	elif args.dlnew:
-		gDownloadNew = True
-	elif args.decall:
-		gDecryptAll = True
-	elif not args.dldec:
-		gNeedProcess = False
-
-	if args.proxy_host and args.proxy_port:
-		proxy = args.proxy_host + ":" + str( args.proxy_port )
-		if args.proxy_user and args.proxy_password:
-			auth = args.proxy_user + ":" + args.proxy_password
-			gProxy = {
-				'http'  : 'http://' + auth + "@" + proxy,
-				'https' : 'https://' + auth + "@" + proxy
-			}
-		else:
-			gProxy = {
-				'http'  : 'http://' + proxy,
-				'https' : 'https://' + proxy
-			}
-
-	if args.map and len( args.map ) > 0:
-		gMapFile = args.map
-
-	if args.token and len( args.token ) > 0:
-		gAccessToken = args.token
-		SaveAccessToken()
-
-	if args.numdl:
-		gMaxDownload = args.numdl
-
-	if args.list:
-		gGenBooklistDec = True
-
-	if args.list_raw:
-		gGenBooklistRaw = True
-
-	if args.no_overwrite:
-		gDecOverwrite = False
-
-	if args.redl:
-		gRedlLibitems = True
 
 def BuildHttpHeader():
 	global gAccessToken, gHttpHeader
@@ -1418,6 +1399,116 @@ def ChangeTitle( data, newTitle ):
 
 	return data
 
+def BookVersionInfo():
+	print( "" )
+	for k in gLibraryItems.keys():
+		item = gLibraryItems[ k ]
+		line = "{:15s} v{:s} ({:s}) - {:s}".format( k, item[ LIBITEM_IDX_VERSION ], item[ LIBITEM_IDX_MODIFY ][ : 10 ], item[ LIBITEM_IDX_TITLE] )
+		print( line )
+
+def UpdateBooks():
+	print( "" )
+	globBooks = os.path.join( gOutDir, ENC_BOOKS_DIR, GLOB_EPUB )
+	epubs = glob.glob( globBooks )
+	todl = []
+	for epub in epubs:
+		bookId = os.path.splitext( os.path.basename( epub ) )[0]
+		if bookId in gLibraryItems.keys():
+			item = gLibraryItems[ bookId ]
+			fSize = os.path.getsize( epub )
+			if fSize != item[ LIBITEM_IDX_SIZE ]:
+				line = "[+] {:15s} v{:s} ({:s}) - {:s}".format( bookId, item[ LIBITEM_IDX_VERSION ], item[ LIBITEM_IDX_MODIFY ][ : 10 ], item[ LIBITEM_IDX_TITLE] )
+				print( line )
+				line = "    {:d} -> {:d}".format( fSize,  item[ LIBITEM_IDX_SIZE ])
+				print( line )
+				todl.append( bookId )
+
+	DlBooks( todl )
+
+def ParseArgument():
+	global gOutDir, gSslVerify, gNeedProcess, gDownloadAll, gDownloadNew, gDecryptAll, gProxy, gMapFile, gMaxDownload
+	global gGenBooklistDec, gGenBooklistRaw
+	global gAccessToken, gDecOverwrite, gRedlLibitems
+	global gBookVer, gUpdateBooks
+
+	parser = argparse.ArgumentParser()
+	parser.add_argument( "-d", "--dldec", action="store_true", help="Download/decrypt books according to download sheet" )
+	parser.add_argument(       "--dlall", action="store_true", help="Download all books" )
+	parser.add_argument(       "--dlnew", action="store_true", help="Download books that have not downloaded yet" )
+	parser.add_argument(       "--decall", action="store_true", help="Decrypt all downloaded books" )
+	parser.add_argument( "-o", "--out", help="Output directory", default="." )
+	parser.add_argument( "-m", "--map", help="Specify title/author map file" )
+	parser.add_argument( "-t", "--token", help="Specify token (will be saved into " + TOKEN_FILE_NAME + ")" )
+	parser.add_argument(       "--proxy-host", help="Proxy IP address" )
+	parser.add_argument(       "--proxy-port", help="Proxy port number", type=int )
+	parser.add_argument(       "--proxy-user", help="Proxy user name" )
+	parser.add_argument(       "--proxy-password", help="Proxy password" )
+	parser.add_argument(       "--no-verify", action="store_true", help="Do not verify SSL CA" )
+	parser.add_argument( "-n", "--numdl", type=int, help="Max number of downloads" )
+	parser.add_argument( "-l", "--list", action="store_true", help="Generate book list for decrypted books" )
+	parser.add_argument(       "--list-raw", action="store_true", help="Generate book list for downloaded books" )
+	parser.add_argument(       "--no-overwrite", action="store_true", help="Do not overwrite existing decrypted file" )
+	parser.add_argument( "-r", "--redl", action="store_true", help="Re-download library items" )
+	parser.add_argument(       "--book-ver", action="store_true", help="List book version" )
+	parser.add_argument( "-u", "--update", action="store_true", help="Check for book update" )
+
+	args = parser.parse_args()
+	gOutDir = args.out
+
+	if args.no_verify:
+		gSslVerify = False
+
+	if args.dlall:
+		gDownloadAll = True
+	elif args.dlnew:
+		gDownloadNew = True
+	elif args.decall:
+		gDecryptAll = True
+	elif not args.dldec:
+		gNeedProcess = False
+
+	if args.proxy_host and args.proxy_port:
+		proxy = args.proxy_host + ":" + str( args.proxy_port )
+		if args.proxy_user and args.proxy_password:
+			auth = args.proxy_user + ":" + args.proxy_password
+			gProxy = {
+				'http'  : 'http://' + auth + "@" + proxy,
+				'https' : 'https://' + auth + "@" + proxy
+			}
+		else:
+			gProxy = {
+				'http'  : 'http://' + proxy,
+				'https' : 'https://' + proxy
+			}
+
+	if args.map and len( args.map ) > 0:
+		gMapFile = args.map
+
+	if args.token and len( args.token ) > 0:
+		gAccessToken = args.token
+		SaveAccessToken()
+
+	if args.numdl:
+		gMaxDownload = args.numdl
+
+	if args.list:
+		gGenBooklistDec = True
+
+	if args.list_raw:
+		gGenBooklistRaw = True
+
+	if args.no_overwrite:
+		gDecOverwrite = False
+
+	if args.redl:
+		gRedlLibitems = True
+
+	if args.book_ver:
+		gBookVer = True
+	
+	if args.update:
+		gUpdateBooks = True
+
 def dldecm00v2Main():
 	global AES, RSA
 
@@ -1453,6 +1544,12 @@ def dldecm00v2Main():
 		sys.exit( 0 )
 	elif gGenBooklistRaw:
 		GenerateRawBooklist()
+		sys.exit( 0 )
+	elif gBookVer:
+		BookVersionInfo()
+		sys.exit( 0 )
+	elif gUpdateBooks:
+		UpdateBooks()
 		sys.exit( 0 )
 	elif gNeedProcess:
 		ParseAuthorTitleMap( gMapFile )
